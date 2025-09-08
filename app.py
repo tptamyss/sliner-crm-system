@@ -569,27 +569,62 @@ def show_main_dashboard():
         st.info("No customers found. Add a new one above 👆")
         return
 
-    # --- Toggle between views ---
+    # --- Toggle View ---
     use_card_view = st.toggle("📌 Card View", value=False)
 
     if not use_card_view:
-        # --- TABLE VIEW ---
+        # === TABLE VIEW ===
         df = pd.DataFrame(customers, columns=[
             "ID", "Name", "Revenue", "Shops Count", "Platform", "Email",
             "Representative", "Requirements", "Sold Product", "Status"
         ])
-        df = df.drop(columns=["ID"])  # hide ID column
-        st.dataframe(df, use_container_width=True)
+        df_display = df.drop(columns=["ID"])  # hide ID
+        st.dataframe(df_display, use_container_width=True)
+
+        # Edit/Delete per row
+        for i, row in df.iterrows():
+            cust_id = row["ID"]
+            col1, col2, col3 = st.columns([2, 1, 1])
+
+            with col1:
+                new_status = st.selectbox(
+                    f"Change status for {row['Name']}",
+                    ["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"],
+                    index=["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"].index(row["Status"]) if row["Status"] else 0,
+                    key=f"status_table_{cust_id}"
+                )
+                if new_status != row["Status"]:
+                    conn = sqlite3.connect("crm_database.db")
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE customers SET status=? WHERE id=?", (new_status, cust_id))
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+
+            with col2:
+                if st.button(f"✏️ Edit {row['Name']}", key=f"edit_table_{cust_id}"):
+                    st.session_state.edit_customer = row.to_dict()
+                    st.session_state.page = "edit_customer"
+                    st.rerun()
+
+            with col3:
+                if st.button(f"🗑️ Delete {row['Name']}", key=f"delete_table_{cust_id}"):
+                    conn = sqlite3.connect("crm_database.db")
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM customers WHERE id=?", (cust_id,))
+                    conn.commit()
+                    conn.close()
+                    st.warning(f"🗑️ Customer {row['Name']} deleted.")
+                    st.rerun()
 
     else:
-        # --- CARD VIEW ---
-        for customer in customers:
+        # === CARD VIEW ===
+        for cust in customers:
             (
                 cust_id, cust_name, revenue, shops_count, platform, email,
                 representative, requirements, sold_product, status
-            ) = customer
+            ) = cust
 
-            # Card-like style
             with st.container():
                 st.markdown(
                     f"""
@@ -599,7 +634,7 @@ def show_main_dashboard():
                         padding: 15px;
                         margin-bottom: 15px;
                         box-shadow: 0px 2px 6px rgba(0,0,0,0.1);
-                        background-color: #fafafa;">
+                        background-color: #fff;">
                         <h4>📌 {cust_name}</h4>
                         <p><b>Revenue:</b> {revenue}</p>
                         <p><b>Shops Count:</b> {shops_count}</p>
@@ -608,52 +643,47 @@ def show_main_dashboard():
                         <p><b>Representative:</b> {representative}</p>
                         <p><b>Requirements:</b> {requirements}</p>
                         <p><b>Sold Product:</b> {sold_product}</p>
-                        <p><b>Status:</b> {status}</p>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
 
-                col1, col2 = st.columns([1, 1])
+                col1, col2, col3 = st.columns([2, 1, 1])
 
-                # --- Edit Customer Button ---
                 with col1:
-                    if st.button(f"✏️ Edit {cust_name}", key=f"edit_{cust_id}"):
-                        with st.form(f"edit_form_{cust_id}"):
-                            new_name = st.text_input("Name*", cust_name)
-                            new_revenue = st.number_input("Revenue", value=revenue or 0.0, step=100.0)
-                            new_shops_count = st.number_input("Shops Count", value=shops_count or 0, step=1)
-                            new_platform = st.text_input("Platform", platform or "")
-                            new_email = st.text_input("Email", email or "")
-                            new_representative = st.text_input("Representative", representative or "")
-                            new_requirements = st.text_area("Requirements", requirements or "")
-                            new_sold_product = st.text_input("Sold Product", sold_product or "")
-                            new_status = st.selectbox("Status", ["Hasnt proceeded", "In progress", "Completed"], index=0)
+                    new_status = st.selectbox(
+                        f"Status for {cust_name}",
+                        ["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"],
+                        index=["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"].index(status) if status else 0,
+                        key=f"status_card_{cust_id}"
+                    )
+                    if new_status != status:
+                        conn = sqlite3.connect("crm_database.db")
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE customers SET status=? WHERE id=?", (new_status, cust_id))
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
 
-                            save_changes = st.form_submit_button("💾 Save Changes")
-
-                            if save_changes:
-                                conn = sqlite3.connect("crm_database.db")
-                                cursor = conn.cursor()
-                                cursor.execute("""
-                                    UPDATE customers
-                                    SET name=?, revenue=?, shops_count=?, platform=?,
-                                        email=?, representative=?, requirements=?,
-                                        sold_product=?, status=?
-                                    WHERE id=?
-                                """, (
-                                    new_name, new_revenue, new_shops_count, new_platform,
-                                    new_email, new_representative, new_requirements,
-                                    new_sold_product, new_status, cust_id
-                                ))
-                                conn.commit()
-                                conn.close()
-                                st.success("✅ Customer updated successfully!")
-                                st.rerun()
-
-                # --- Delete Customer Button ---
                 with col2:
-                    if st.button(f"🗑️ Delete {cust_name}", key=f"delete_{cust_id}"):
+                    if st.button("✏️ Edit", key=f"edit_card_{cust_id}"):
+                        st.session_state.edit_customer = {
+                            "id": cust_id,
+                            "name": cust_name,
+                            "revenue": revenue,
+                            "shops_count": shops_count,
+                            "platform": platform,
+                            "email": email,
+                            "representative": representative,
+                            "requirements": requirements,
+                            "sold_product": sold_product,
+                            "status": status
+                        }
+                        st.session_state.page = "edit_customer"
+                        st.rerun()
+
+                with col3:
+                    if st.button("🗑️ Delete", key=f"delete_card_{cust_id}"):
                         conn = sqlite3.connect("crm_database.db")
                         cursor = conn.cursor()
                         cursor.execute("DELETE FROM customers WHERE id=?", (cust_id,))
