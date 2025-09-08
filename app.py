@@ -748,38 +748,10 @@ def show_calendar():
             st.metric("This Month", 0)
 
 def show_notifications():
-    user = st.session_state.user
-    if not user:
-        st.info("Please log in to see notifications.")
-        return
-
-    notifications = get_notifications(user["id"])
-    st.subheader("🔔 Notifications")
-
-    if not notifications:
-        st.write("No notifications yet.")
-    else:
-        for notif in notifications:
-            notif_id, message, notif_type, read, created_at = notif
-            color = "green" if notif_type == "success" else "red" if notif_type == "error" else "blue"
-
-            st.markdown(
-                f"<div style='padding:8px; margin:4px; border-radius:5px; background-color:{color}; color:white;'>"
-                f"{message} <br><small>{created_at}</small></div>",
-                unsafe_allow_html=True
-            )
-
-        # Mark all as read button
-        if st.button("Mark all as read"):
-            conn = sqlite3.connect('crm_database.db')
-            cursor = conn.cursor()
-            cursor.execute('UPDATE notifications SET read = 1 WHERE user_id = ?', (user["id"],))
-            conn.commit()
-            conn.close()
-            st.rerun()
+    st.header("🔔 Notifications")
     
     # Get notifications
-    notifications_df = get_notifications(st.session_state.user['id'])
+    notifications_df = get_notifications(st.session_state.user['id'], st.session_state.user['role'])
     
     if len(notifications_df) > 0:
         # Filter options
