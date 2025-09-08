@@ -372,15 +372,40 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==============================
+# UI Pages
+# ==============================
+
 def login_page():
-    st.title("Login Page")
-    st.write("🔑 Please log in.")
-    # TODO: Add email + password input here
+    st.title("🔑 Login")
+
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login"):
+        user = authenticate_user(email, password)
+        if user:
+            st.session_state.user = user
+            st.success(f"Welcome back, {user['name']}! 🎉")
+            st.session_state.page = "dashboard"
+            st.rerun()
+        else:
+            st.error("Invalid email or password.")
+
+    st.caption("Default admin login: **admin@company.com / admin123**")
 
 def main_dashboard():
-    st.title("Dashboard")
-    st.write(f"Welcome, {st.session_state.user['name']}!")
-    # TODO: Add your dashboard UI here
+    st.title("🏢 CRM Dashboard")
+
+    st.sidebar.subheader("Navigation")
+    if st.sidebar.button("Logout"):
+        st.session_state.user = None
+        st.session_state.page = "login"
+        st.rerun()
+
+    st.write(f"Hello, **{st.session_state.user['name']}** 👋")
+    st.write("This is your CRM main dashboard.")
+    # 👉 Later: add pages for Customers, Meetings, Notifications, etc.
 
 
 # Main app logic
