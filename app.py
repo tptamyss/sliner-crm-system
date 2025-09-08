@@ -372,6 +372,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+def login_page():
+    st.title("Login Page")
+    st.write("🔑 Please log in.")
+    # TODO: Add email + password input here
+
+def main_dashboard():
+    st.title("Dashboard")
+    st.write(f"Welcome, {st.session_state.user['name']}!")
+    # TODO: Add your dashboard UI here
+
+
 # Main app logic
 def main():
     if st.session_state.user is None:
