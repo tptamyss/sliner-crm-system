@@ -520,177 +520,123 @@ def main_dashboard():
         show_approvals()
 
 def show_main_dashboard():
-    st.title("🏢 CRM Dashboard")
-
-    # --- Add Customer Section ---
+    st.header("📊 Customer Management")
+    
+    # Add new customer section
     with st.expander("➕ Add New Customer"):
-        with st.form("add_customer_form"):
-            name = st.text_input("Name*")
-            revenue = st.number_input("Revenue", min_value=0.0, step=100.0)
-            shops_count = st.number_input("Number of Shops", min_value=0, step=1)
-            platform = st.text_input("Platform")
-            email = st.text_input("Email")
-            representative = st.text_input("Representative")
+        with st.form("add_customer"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                customer_name = st.text_input("Customer Name*")
+                revenue = st.number_input("Revenue ($)", min_value=0.0, format="%.2f")
+                shops_count = st.number_input("Number of Shops", min_value=0)
+                platform = st.text_input("Platform")
+            
+            with col2:
+                # Get users for assignment
+                users_df = get_all_users()
+                employee_users = users_df[users_df['role'] == 'employee']
+                if len(employee_users) > 0:
+                    assigned_to = st.selectbox("Assign to Employee", 
+                                             options=employee_users['id'].tolist(),
+                                             format_func=lambda x: employee_users[employee_users['id']==x]['name'].iloc[0])
+                else:
+                    st.warning("No employees available. Admin should add employees first.")
+                    assigned_to = None
+                
+                customer_email = st.text_input("Customer Email")
+                representative = st.text_input("Representative Person")
+            
             requirements = st.text_area("Requirements")
             sold_product = st.text_input("Sold Product")
-
+            
             submit_customer = st.form_submit_button("Add Customer")
-
-            if submit_customer and name:
-                auto_approve = st.session_state.user["role"] == "admin"
-                add_customer(
-                    name, revenue, shops_count, platform,
-                    st.session_state.user["id"], email, representative,
-                    requirements, sold_product, st.session_state.user["id"],
-                    auto_approve
-                )
-                if auto_approve:
-                    st.success("✅ Customer added successfully!")
+            
+            if submit_customer:
+                if not customer_name:
+                    st.error("Customer Name is required!")
+                elif not assigned_to:
+                    st.error("Please assign to an employee!")
                 else:
-                    st.success("📤 Customer submitted for approval!")
-                st.rerun()
-
-    st.markdown("---")
-
-    # --- Customers List ---
-    st.subheader("👥 Customers")
-
-    conn = sqlite3.connect("crm_database.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT id, name, revenue, shops_count, platform, email,
-               representative, requirements, sold_product, status
-        FROM customers
-    """)
-    customers = cursor.fetchall()
-    conn.close()
-
-    if not customers:
-        st.info("No customers found. Add a new one above 👆")
-        return
-
-    # --- Toggle View ---
-    use_card_view = st.toggle("📌 Card View", value=False)
-
-    if not use_card_view:
-        # === TABLE VIEW ===
-        df = pd.DataFrame(customers, columns=[
-            "ID", "Name", "Revenue", "Shops Count", "Platform", "Email",
-            "Representative", "Requirements", "Sold Product", "Status"
-        ])
-        df_display = df.drop(columns=["ID"])  # hide ID
-        st.dataframe(df_display, use_container_width=True)
-
-        # Edit/Delete per row
-        for i, row in df.iterrows():
-            cust_id = row["ID"]
-            col1, col2, col3 = st.columns([2, 1, 1])
-
-            with col1:
-                new_status = st.selectbox(
-                    f"Change status for {row['Name']}",
-                    ["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"],
-                    index=["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"].index(row["Status"]) if row["Status"] else 0,
-                    key=f"status_table_{cust_id}"
-                )
-                if new_status != row["Status"]:
-                    conn = sqlite3.connect("crm_database.db")
-                    cursor = conn.cursor()
-                    cursor.execute("UPDATE customers SET status=? WHERE id=?", (new_status, cust_id))
-                    conn.commit()
-                    conn.close()
-                    st.rerun()
-
-            with col2:
-                if st.button(f"✏️ Edit {row['Name']}", key=f"edit_table_{cust_id}"):
-                    st.session_state.edit_customer = row.to_dict()
-                    st.session_state.page = "edit_customer"
-                    st.rerun()
-
-            with col3:
-                if st.button(f"🗑️ Delete {row['Name']}", key=f"delete_table_{cust_id}"):
-                    conn = sqlite3.connect("crm_database.db")
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM customers WHERE id=?", (cust_id,))
-                    conn.commit()
-                    conn.close()
-                    st.warning(f"🗑️ Customer {row['Name']} deleted.")
-                    st.rerun()
-
+                    try:
+                        auto_approve = st.session_state.user['role'] == 'admin'
+                        add_customer(customer_name, revenue, shops_count, platform, assigned_to, 
+                                   customer_email, representative, requirements, sold_product, 
+                                   st.session_state.user['id'], auto_approve)
+                        
+                        if auto_approve:
+                            st.success("✅ Customer added successfully and visible immediately!")
+                        else:
+                            st.success("📤 Customer submitted for admin approval! Check 'Approvals' section.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error adding customer: {str(e)}")
+    
+    # Display customers
+    st.subheader("Customer List")
+    
+    # View options
+    view_type = st.radio("View Type", ["Table", "Cards"], horizontal=True)
+    
+    customers_df = get_customers(st.session_state.user['id'], st.session_state.user['role'])
+    
+    if len(customers_df) > 0:
+        if view_type == "Table":
+            # Status update functionality
+            status_options = ["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"]
+            
+            for idx, customer in customers_df.iterrows():
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**{customer['name']}** - {customer['platform']}")
+                        st.write(f"Revenue: ${customer['revenue']:,.2f} | Shops: {customer['shops_count']}")
+                    
+                    with col2:
+                        st.write(f"Assigned: {customer['assigned_name']}")
+                        st.write(f"Rep: {customer['representative']}")
+                    
+                    with col3:
+                        # Only allow status change if user is assigned or admin
+                        can_edit = (st.session_state.user['role'] == 'admin' or 
+                                  customer['assigned_to'] == st.session_state.user['id'])
+                        
+                        if can_edit:
+                            current_status = customer['status']
+                            new_status = st.selectbox(
+                                "Status",
+                                status_options,
+                                index=status_options.index(current_status) if current_status in status_options else 0,
+                                key=f"status_{customer['id']}"
+                            )
+                            
+                            if new_status != current_status:
+                                update_customer_status(customer['id'], new_status)
+                                st.rerun()
+                        else:
+                            st.write(f"Status: {customer['status']}")
+                    
+                    st.divider()
+        
+        else:  # Cards view
+            cols = st.columns(3)
+            for idx, customer in customers_df.iterrows():
+                with cols[idx % 3]:
+                    with st.container():
+                        st.markdown(f"""
+                        <div style="border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin: 10px 0;">
+                            <h4>{customer['name']}</h4>
+                            <p><b>Platform:</b> {customer['platform']}</p>
+                            <p><b>Revenue:</b> ${customer['revenue']:,.2f}</p>
+                            <p><b>Shops:</b> {customer['shops_count']}</p>
+                            <p><b>Status:</b> {customer['status']}</p>
+                            <p><b>Assigned:</b> {customer['assigned_name']}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
     else:
-        # === CARD VIEW ===
-        for cust in customers:
-            (
-                cust_id, cust_name, revenue, shops_count, platform, email,
-                representative, requirements, sold_product, status
-            ) = cust
-
-            with st.container():
-                st.markdown(
-                    f"""
-                    <div style="
-                        border: 1px solid #ddd;
-                        border-radius: 12px;
-                        padding: 15px;
-                        margin-bottom: 15px;
-                        box-shadow: 0px 2px 6px rgba(0,0,0,0.1);
-                        background-color: #fff;">
-                        <h4>📌 {cust_name}</h4>
-                        <p><b>Revenue:</b> {revenue}</p>
-                        <p><b>Shops Count:</b> {shops_count}</p>
-                        <p><b>Platform:</b> {platform}</p>
-                        <p><b>Email:</b> {email}</p>
-                        <p><b>Representative:</b> {representative}</p>
-                        <p><b>Requirements:</b> {requirements}</p>
-                        <p><b>Sold Product:</b> {sold_product}</p>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                col1, col2, col3 = st.columns([2, 1, 1])
-
-                with col1:
-                    new_status = st.selectbox(
-                        f"Status for {cust_name}",
-                        ["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"],
-                        index=["Hasn't proceeded", "Ongoing", "Dealt", "Cancelled"].index(status) if status else 0,
-                        key=f"status_card_{cust_id}"
-                    )
-                    if new_status != status:
-                        conn = sqlite3.connect("crm_database.db")
-                        cursor = conn.cursor()
-                        cursor.execute("UPDATE customers SET status=? WHERE id=?", (new_status, cust_id))
-                        conn.commit()
-                        conn.close()
-                        st.rerun()
-
-                with col2:
-                    if st.button("✏️ Edit", key=f"edit_card_{cust_id}"):
-                        st.session_state.edit_customer = {
-                            "id": cust_id,
-                            "name": cust_name,
-                            "revenue": revenue,
-                            "shops_count": shops_count,
-                            "platform": platform,
-                            "email": email,
-                            "representative": representative,
-                            "requirements": requirements,
-                            "sold_product": sold_product,
-                            "status": status
-                        }
-                        st.session_state.page = "edit_customer"
-                        st.rerun()
-
-                with col3:
-                    if st.button("🗑️ Delete", key=f"delete_card_{cust_id}"):
-                        conn = sqlite3.connect("crm_database.db")
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM customers WHERE id=?", (cust_id,))
-                        conn.commit()
-                        conn.close()
-                        st.warning(f"🗑️ Customer {cust_name} deleted.")
-                        st.rerun()
+        st.info("No customers found. Add your first customer above!")
 
 def show_calendar():
     st.header("📅 Calendar & Meetings")
