@@ -555,16 +555,6 @@ def show_main_dashboard():
     # Display customers
     st.subheader("Customer List")
     
-    # Debug info
-    with st.expander("🔍 Debug Info"):
-        st.write(f"Your role: {st.session_state.user['role']}")
-        st.write(f"Your ID: {st.session_state.user['id']}")
-        customers_df = get_customers(st.session_state.user['id'], st.session_state.user['role'])
-        st.write(f"Customers found: {len(customers_df)}")
-        if st.session_state.user['role'] == 'admin':
-            pending_df = get_pending_customers()
-            st.write(f"Pending customers: {len(pending_df)}")
-    
     # View options
     view_type = st.radio("View Type", ["Table", "Cards"], horizontal=True)
     
