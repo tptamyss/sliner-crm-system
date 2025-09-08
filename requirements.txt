@@ -1,8 +1,6 @@
 streamlit
 bcrypt
 pandas
-sqlite3
-smtplib
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
