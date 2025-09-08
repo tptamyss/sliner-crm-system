@@ -8,6 +8,10 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+
 
 # Database setup
 def init_database():
@@ -91,6 +95,27 @@ def init_database():
     
     conn.commit()
     conn.close()
+
+def get_unread_count(user_id):
+    conn = sqlite3.connect('crm_database.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read = 0', (user_id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_notifications(user_id):
+    conn = sqlite3.connect('crm_database.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, message, type, read, created_at 
+        FROM notifications 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC
+    ''', (user_id,))
+    notifications = cursor.fetchall()
+    conn.close()
+    return notifications
 
     # Email configuration
 def get_email_config():
@@ -909,7 +934,35 @@ def show_calendar():
             st.metric("This Month", 0)
 
 def show_notifications():
-    st.header("🔔 Notifications")
+    user = st.session_state.user
+    if not user:
+        st.info("Please log in to see notifications.")
+        return
+
+    notifications = get_notifications(user["id"])
+    st.subheader("🔔 Notifications")
+
+    if not notifications:
+        st.write("No notifications yet.")
+    else:
+        for notif in notifications:
+            notif_id, message, notif_type, read, created_at = notif
+            color = "green" if notif_type == "success" else "red" if notif_type == "error" else "blue"
+
+            st.markdown(
+                f"<div style='padding:8px; margin:4px; border-radius:5px; background-color:{color}; color:white;'>"
+                f"{message} <br><small>{created_at}</small></div>",
+                unsafe_allow_html=True
+            )
+
+        # Mark all as read button
+        if st.button("Mark all as read"):
+            conn = sqlite3.connect('crm_database.db')
+            cursor = conn.cursor()
+            cursor.execute('UPDATE notifications SET read = 1 WHERE user_id = ?', (user["id"],))
+            conn.commit()
+            conn.close()
+            st.rerun()
     
     # Get notifications
     notifications_df = get_notifications(st.session_state.user['id'], st.session_state.user['role'])
