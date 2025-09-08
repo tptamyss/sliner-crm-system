@@ -779,7 +779,7 @@ def show_notifications():
             st.rerun()
     
     # Get notifications
-    notifications_df = get_notifications(st.session_state.user['id'], st.session_state.user['role'])
+    notifications_df = get_notifications(st.session_state.user['id'])
     
     if len(notifications_df) > 0:
         # Filter options
