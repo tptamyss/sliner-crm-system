@@ -569,34 +569,50 @@ def show_main_dashboard():
         st.info("No customers found. Add a new one above 👆")
         return
 
-    # --- View switcher ---
-    view_type = st.radio("View as:", ["📋 Table", "📌 Cards"], horizontal=True)
+    # --- Toggle between views ---
+    use_card_view = st.toggle("📌 Card View", value=False)
 
-    if view_type == "📋 Table":
-        # Show as table
+    if not use_card_view:
+        # --- TABLE VIEW ---
         df = pd.DataFrame(customers, columns=[
             "ID", "Name", "Revenue", "Shops Count", "Platform", "Email",
             "Representative", "Requirements", "Sold Product", "Status"
         ])
+        df = df.drop(columns=["ID"])  # hide ID column
         st.dataframe(df, use_container_width=True)
 
-    elif view_type == "📌 Cards":
-        # Show as cards/expanders
+    else:
+        # --- CARD VIEW ---
         for customer in customers:
             (
                 cust_id, cust_name, revenue, shops_count, platform, email,
                 representative, requirements, sold_product, status
             ) = customer
 
-            with st.expander(f"📌 {cust_name}"):
-                st.write(f"**Revenue:** {revenue}")
-                st.write(f"**Shops Count:** {shops_count}")
-                st.write(f"**Platform:** {platform}")
-                st.write(f"**Email:** {email}")
-                st.write(f"**Representative:** {representative}")
-                st.write(f"**Requirements:** {requirements}")
-                st.write(f"**Sold Product:** {sold_product}")
-                st.write(f"**Status:** {status}")
+            # Card-like style
+            with st.container():
+                st.markdown(
+                    f"""
+                    <div style="
+                        border: 1px solid #ddd;
+                        border-radius: 12px;
+                        padding: 15px;
+                        margin-bottom: 15px;
+                        box-shadow: 0px 2px 6px rgba(0,0,0,0.1);
+                        background-color: #fafafa;">
+                        <h4>📌 {cust_name}</h4>
+                        <p><b>Revenue:</b> {revenue}</p>
+                        <p><b>Shops Count:</b> {shops_count}</p>
+                        <p><b>Platform:</b> {platform}</p>
+                        <p><b>Email:</b> {email}</p>
+                        <p><b>Representative:</b> {representative}</p>
+                        <p><b>Requirements:</b> {requirements}</p>
+                        <p><b>Sold Product:</b> {sold_product}</p>
+                        <p><b>Status:</b> {status}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
                 col1, col2 = st.columns([1, 1])
 
