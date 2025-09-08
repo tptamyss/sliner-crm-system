@@ -1,4 +1,3 @@
-wait i have already got a working UI, can u merge them?
 import streamlit as st
 import sqlite3
 import bcrypt
