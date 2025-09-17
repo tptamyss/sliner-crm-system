@@ -1,4 +1,10 @@
 streamlit
 bcrypt
 pandas
-email-validator
+pyodbc
+uuid
+smtplib
+email
+os
+sqlite3
+datetime
