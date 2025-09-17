@@ -1,10 +1,10 @@
 streamlit
 bcrypt
 pandas
-pyodbc
 uuid
 smtplib
 email
 os
 sqlite3
 datetime
+pymssql
