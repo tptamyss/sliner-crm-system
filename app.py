@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import bcrypt
 import pandas as pd
 from datetime import datetime, timedelta, date
@@ -8,216 +7,128 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
+import pyodbc
+import sqlite3
+
+def get_auth_connection():
+    return sqlite3.connect("auth.db")
+
+def init_auth_database():
+    conn = get_auth_connection()
+    cursor = conn.cursor()
+
+    # Users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Customer Groups
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS customer_groups (
+            GroupID TEXT PRIMARY KEY,
+            GroupName TEXT NOT NULL,
+            Description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS customer_meta (
+            CustomerID TEXT PRIMARY KEY,
+            assigned_to TEXT,
+            status TEXT DEFAULT 'Chưa bắt đầu',
+            approved INTEGER DEFAULT 0,
+            created_by TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (assigned_to) REFERENCES users (id),
+            FOREIGN KEY (created_by) REFERENCES users (id)
+        )
+    ''')
+
+    # Notifications
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            message TEXT NOT NULL,
+            type TEXT NOT NULL,
+            related_id TEXT,
+            read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+    ''')
+
+    # Ensure default admin user
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role='admin'")
+    if cursor.fetchone()[0] == 0:
+        admin_id = str(uuid.uuid4())
+        password = "admin123"
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute(
+            "INSERT INTO users (id, email, password_hash, role, name) VALUES (?, ?, ?, ?, ?)",
+            (admin_id, "admin@company.com", hashed, "admin", "Admin User")
+        )
+
+    conn.commit()
+    conn.close()
+    print("SQLite auth.db initialized ✅")
+
+def get_connection():
+    """Create and return a SQL Server connection."""
+    return pyodbc.connect(
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        "SERVER=14.224.227.37,1434;"   # <-- change this
+        "DATABASE=SlinerNB;"                # <-- change this
+        "UID=SlinerOwner;"              # <-- SQL Auth user (remove if Windows auth)
+        "PWD=Sliner!19870310;"              # <-- SQL Auth password
+    )
+
+def get_crm_connection():
+    """Get connection to CRM database (SQL Server)"""
+    return get_connection()  # Uses your existing SQL Server connection
 
 def init_database():
-    """Initialize database with proper error handling and recovery"""
-    db_path = 'crm_database.db'
+    """
+    Initialize database connection.
+    Unlike SQLite, we don't create tables here — 
+    assume schema already exists in SQL Server.
+    Just ensure defaults (admin user, groups, etc.).
+    """
     max_retries = 2
     
     for attempt in range(max_retries):
         try:
-            conn = sqlite3.connect(db_path)
+            conn = get_connection()
             cursor = conn.cursor()
-            
-            # Enable foreign keys
-            cursor.execute('PRAGMA foreign_keys = ON')
-            
-            # Users table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Enhanced Customers table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS customers (
-                    CustomerID TEXT PRIMARY KEY,
-                    CompanyName TEXT NOT NULL,
-                    TaxCode TEXT,
-                    GroupID TEXT,
-                    Address TEXT,
-                    Country TEXT DEFAULT 'Vietnam',
-                    CustomerCategory TEXT CHECK (CustomerCategory IN ('I', 'H', 'C')),
-                    CustomerType TEXT,
-                    ContactPerson1 TEXT,
-                    ContactEmail1 TEXT,
-                    ContactPhone1 TEXT,
-                    ContactPerson2 TEXT,
-                    ContactEmail2 TEXT,
-                    ContactPhone2 TEXT,
-                    Industry TEXT,
-                    Source TEXT,
-                    assigned_to TEXT,
-                    status TEXT DEFAULT 'Chưa bắt đầu',
-                    approved BOOLEAN DEFAULT FALSE,
-                    CreatedDate DATE DEFAULT (date('now')),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (assigned_to) REFERENCES users (id)
-                )
-            ''')
-            
-            # Services table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS services (
-                    ServiceID TEXT PRIMARY KEY,
-                    CustomerID TEXT NOT NULL,
-                    ServiceType TEXT,
-                    Description TEXT,
-                    StartDate DATE,
-                    ExpectedEndDate DATE,
-                    Status TEXT DEFAULT 'Chưa bắt đầu',
-                    PackageCode TEXT,
-                    Partner TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (CustomerID) REFERENCES customers (CustomerID)
-                )
-            ''')
-            
-            # Payments table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
-                    PaymentID TEXT PRIMARY KEY,
-                    ServiceID TEXT NOT NULL,
-                    Currency TEXT DEFAULT 'VND',
-                    OriginalAmount DECIMAL(18,2),
-                    ExchangeRate DECIMAL(10,4),
-                    ConvertedAmount DECIMAL(18,2),
-                    DepositAmount DECIMAL(18,2) DEFAULT 0,
-                    DepositDate DATE,
-                    FirstPaymentAmount DECIMAL(18,2) DEFAULT 0,
-                    FirstPaymentDate DATE,
-                    SecondPaymentAmount DECIMAL(18,2) DEFAULT 0,
-                    SecondPaymentDate DATE,
-                    Notes TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ServiceID) REFERENCES services (ServiceID)
-                )
-            ''')
-            
-            # Work Progress table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS work_progress (
-                    TaskID TEXT PRIMARY KEY,
-                    ServiceID TEXT NOT NULL,
-                    TaskName TEXT NOT NULL,
-                    TaskDescription TEXT,
-                    StartDate DATE,
-                    ExpectedEndDate DATE,
-                    Status TEXT DEFAULT 'Chưa bắt đầu',
-                    LastUpdated DATE DEFAULT (date('now')),
-                    UpdatedBy TEXT,
-                    Notes TEXT,
-                    Progress INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ServiceID) REFERENCES services (ServiceID),
-                    FOREIGN KEY (UpdatedBy) REFERENCES users (id)
-                )
-            ''')
-            
-            # Work Billing table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS work_billing (
-                    BillingID TEXT PRIMARY KEY,
-                    ServiceID TEXT NOT NULL,
-                    ActivityType TEXT,
-                    Level TEXT,
-                    HoursWorked DECIMAL(5,2),
-                    HourlyRate DECIMAL(18,2),
-                    WorkDate DATE,
-                    Notes TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (ServiceID) REFERENCES services (ServiceID)
-                )
-            ''')
-            
-            # Client Documents table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS client_documents (
-                    DocumentID TEXT PRIMARY KEY,
-                    CustomerID TEXT NOT NULL,
-                    ServiceID TEXT,
-                    DocumentType TEXT,
-                    DocumentName TEXT,
-                    FilePath TEXT,
-                    CreatedDate DATE DEFAULT (date('now')),
-                    Status TEXT DEFAULT 'Đang xử lý',
-                    ResponsiblePerson TEXT,
-                    Notes TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (CustomerID) REFERENCES customers (CustomerID),
-                    FOREIGN KEY (ServiceID) REFERENCES services (ServiceID),
-                    FOREIGN KEY (ResponsiblePerson) REFERENCES users (id)
-                )
-            ''')
-            
-            # Notifications table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS notifications (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    message TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    related_id TEXT,
-                    read BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (id)
-                )
-            ''')
-            
-            # Customer Groups table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS customer_groups (
-                    GroupID TEXT PRIMARY KEY,
-                    GroupName TEXT NOT NULL,
-                    Description TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Create indexes only after tables are created and committed
-            conn.commit()
-            
-            # Now create indexes
-            indexes = [
-                'CREATE INDEX IF NOT EXISTS idx_customers_country ON customers(Country)',
-                'CREATE INDEX IF NOT EXISTS idx_customers_category ON customers(CustomerCategory)',
-                'CREATE INDEX IF NOT EXISTS idx_customers_assigned ON customers(assigned_to)',
-                'CREATE INDEX IF NOT EXISTS idx_services_customer ON services(CustomerID)',
-                'CREATE INDEX IF NOT EXISTS idx_work_progress_service ON work_progress(ServiceID)',
-                'CREATE INDEX IF NOT EXISTS idx_payments_service ON payments(ServiceID)'
-            ]
-            
-            for index_sql in indexes:
-                try:
-                    cursor.execute(index_sql)
-                except sqlite3.Error as index_error:
-                    print(f"Warning: Could not create index: {index_error}")
-                    # Continue with other indexes
-            
-            # Create default admin if none exists
-            cursor.execute('SELECT COUNT(*) FROM users WHERE role = "admin"')
+
+            # ---- Ensure default admin user exists ----
+            cursor.execute("SELECT COUNT(*) FROM Users WHERE role = 'admin'")
             admin_count = cursor.fetchone()[0]
-            
+
             if admin_count == 0:
-                import uuid
-                import bcrypt
                 admin_id = str(uuid.uuid4())
                 password = "admin123"
                 hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
                 cursor.execute('''
-                    INSERT INTO users (id, email, password_hash, role, name)
+                    INSERT INTO Users (id, email, password_hash, role, name)
                     VALUES (?, ?, ?, ?, ?)
-                ''', (admin_id, "admin@company.com", hashed_password, "admin", "Admin User"))
-            
-            # Insert sample customer groups if none exist
-            cursor.execute('SELECT COUNT(*) FROM customer_groups')
+                ''', (admin_id, "admin@company.com", hashed_password.decode('utf-8'), "admin", "Admin User"))
+                print("Default admin user created (email: admin@company.com / password: admin123)")
+
+            # ---- Ensure default customer groups exist ----
+            cursor.execute("SELECT COUNT(*) FROM Customer_Groups")
             group_count = cursor.fetchone()[0]
+
             if group_count == 0:
                 sample_groups = [
                     ('GRP001', 'VIP Customers', 'High priority customers'),
@@ -225,90 +136,45 @@ def init_database():
                     ('GRP003', 'New Leads', 'Potential customers')
                 ]
                 cursor.executemany('''
-                    INSERT INTO customer_groups (GroupID, GroupName, Description)
+                    INSERT INTO Customer_Groups (GroupID, GroupName, Description)
                     VALUES (?, ?, ?)
                 ''', sample_groups)
-            
+                print("Default customer groups inserted")
+
             conn.commit()
             conn.close()
-            
             print("Database initialized successfully!")
             return True
-            
-        except sqlite3.Error as e:
-            print(f"Database error on attempt {attempt + 1}: {e}")
-            
-            # Close connection if it exists
+
+        except Exception as e:
+            print(f"Database connection/init error on attempt {attempt + 1}: {e}")
+
             try:
                 conn.close()
             except:
                 pass
-            
-            # If this is not the last attempt, try to recover
+
             if attempt < max_retries - 1:
-                print(f"Attempting to recover database...")
-                
-                # Check if database file is corrupted
-                try:
-                    test_conn = sqlite3.connect(db_path)
-                    test_conn.execute('PRAGMA integrity_check')
-                    test_conn.close()
-                except:
-                    print("Database appears corrupted, removing and recreating...")
-                    if os.path.exists(db_path):
-                        os.remove(db_path)
+                print("Retrying connection...")
             else:
                 print("Failed to initialize database after all attempts")
                 return False
-        
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            return False
     
     return False
-# Email configuration
-def get_email_config():
-    return {
-        'smtp_server': 'smtp.gmail.com',
-        'smtp_port': 587,
-        'email_user': "tptamyss@gmail.com",
-        'email_password': "pgct pnwf svgl sfbi",
-        'company_name': 'CRM System'
-    }
+    
+    return False
 
-def send_email(to_email, subject, body, is_html=False):
-    try:
-        config = get_email_config()
-        msg = MIMEMultipart()
-        msg['From'] = config['email_user']
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        
-        if is_html:
-            msg.attach(MIMEText(body, 'html'))
-        else:
-            msg.attach(MIMEText(body, 'plain'))
-        
-        server = smtplib.SMTP(config['smtp_server'], config['smtp_port'])
-        server.starttls()
-        server.login(config['email_user'], config['email_password'])
-        text = msg.as_string()
-        server.sendmail(config['email_user'], to_email, text)
-        server.quit()
-        
-        return True, "Email sent successfully!"
-    except Exception as e:
-        return False, f"Failed to send email: {str(e)}"
-
-# Authentication functions
 def hash_password(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
 
 def verify_password(password, hashed):
+    # make sure hashed is in bytes
+    if isinstance(hashed, str):
+        hashed = hashed.encode('utf-8')
     return bcrypt.checkpw(password.encode('utf-8'), hashed)
 
 def authenticate_user(email, password):
-    conn = sqlite3.connect('crm_database.db')
+    conn = get_auth_connection()  # <-- use SQLite
     cursor = conn.cursor()
     cursor.execute('SELECT id, password_hash, role, name FROM users WHERE email = ?', (email,))
     user = cursor.fetchone()
@@ -318,9 +184,8 @@ def authenticate_user(email, password):
         return {'id': user[0], 'email': email, 'role': user[2], 'name': user[3]}
     return None
 
-# Customer ID generation
 def generate_customer_id(country, category):
-    conn = sqlite3.connect('crm_database.db')
+    conn = get_connection()  # Your SQL Server connection
     cursor = conn.cursor()
     
     prefix_map = {
@@ -334,9 +199,9 @@ def generate_customer_id(country, category):
     prefix = prefix_map.get(country, 'XXX') + category
     
     cursor.execute('''
-        SELECT MAX(CAST(SUBSTR(CustomerID, 5, 6) AS INTEGER)) 
-        FROM customers 
-        WHERE SUBSTR(CustomerID, 1, 4) = ?
+        SELECT MAX(CAST(SUBSTRING(CustomerID, 5, 6) AS INT)) 
+        FROM CRM_Customers 
+        WHERE SUBSTRING(CustomerID, 1, 4) = ?
     ''', (prefix,))
     
     result = cursor.fetchone()[0]
@@ -347,238 +212,500 @@ def generate_customer_id(country, category):
     
     return new_id
 
-# Database helper functions
+# ---------- Users (SQLite auth.db) ----------
 def get_all_users():
-    conn = sqlite3.connect('crm_database.db')
+    conn = get_auth_connection()
     df = pd.read_sql_query('SELECT id, name, email, role FROM users', conn)
     conn.close()
     return df
 
+
 def add_user(email, password, role, name):
+    """
+    Create user in SQLite auth.db.
+    Returns True on success, False if duplicate or error.
+    """
     try:
-        conn = sqlite3.connect('crm_database.db')
+        conn = get_auth_connection()
         cursor = conn.cursor()
+
         user_id = str(uuid.uuid4())
-        hashed_password = hash_password(password)
+        hashed_password = hash_password(password)  # bcrypt bytes
+        if isinstance(hashed_password, bytes):
+            hashed_password = hashed_password.decode('utf-8')  # store as text
+
         cursor.execute('''
             INSERT INTO users (id, email, password_hash, role, name)
             VALUES (?, ?, ?, ?, ?)
         ''', (user_id, email, hashed_password, role, name))
+
         conn.commit()
         conn.close()
         return True
+
     except sqlite3.IntegrityError:
+        # Unique constraint violation (duplicate email, etc.)
         return False
 
+    except Exception as e:
+        print(f"Error adding user: {e}")
+        return False
+
+# ---------- Customer groups (SQLite auth.db) ----------
 def get_customer_groups():
-    conn = sqlite3.connect('crm_database.db')
+    conn = get_auth_connection()
     df = pd.read_sql_query('SELECT * FROM customer_groups', conn)
     conn.close()
     return df
 
 def add_customer_enhanced(company_name, tax_code, group_id, address, country, customer_category, 
-                         customer_type, contact_person1, contact_email1, contact_phone1,
+                         company_type, contact_person1, contact_email1, contact_phone1,
                          contact_person2, contact_email2, contact_phone2, industry, source,
                          assigned_to, created_by, auto_approve=False):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    """
+    Insert customer into SQL Server CRM_Customers table and metadata into SQLite auth.db
+    """
+    print(f"DEBUG: Starting add_customer_enhanced for {company_name}")
     
-    customer_id = generate_customer_id(country, customer_category)
-    approved = auto_approve
-    
-    cursor.execute('''
-        INSERT INTO customers (
-            CustomerID, CompanyName, TaxCode, GroupID, Address, Country, CustomerCategory, CustomerType,
-            ContactPerson1, ContactEmail1, ContactPhone1, ContactPerson2, ContactEmail2, ContactPhone2,
-            Industry, Source, assigned_to, approved
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (customer_id, company_name, tax_code, group_id, address, country, customer_category, customer_type,
-          contact_person1, contact_email1, contact_phone1, contact_person2, contact_email2, contact_phone2,
-          industry, source, assigned_to, approved))
-    
-    if not auto_approve:
-        notification_id = str(uuid.uuid4())
-        cursor.execute('''
-            INSERT INTO notifications (id, user_id, message, type, related_id)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (notification_id, None, f"New customer '{company_name}' needs approval", "customer_approval", customer_id))
-    
-    conn.commit()
-    conn.close()
-    return customer_id
+    # 1) Insert into SQL Server CRM_Customers (using correct columns)
+    try:
+        crm_conn = get_connection()
+        crm_cursor = crm_conn.cursor()
+        
+        customer_id = generate_customer_id(country, customer_category)
+        created_date = datetime.now().date()
+        print(f"DEBUG: Generated customer_id: {customer_id}")
+
+        # FIXED: Using actual CRM_Customers columns
+        crm_cursor.execute('''
+            INSERT INTO CRM_Customers (
+                CustomerID, CompanyName, TaxCode, GroupID, Address, Country, CustomerCategory,
+                CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
+                ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            customer_id, company_name, tax_code, group_id, address, country, customer_category,
+            company_type, contact_person1, contact_email1, contact_phone1,
+            contact_person2, contact_email2, contact_phone2, industry, source, created_date
+        ))
+        crm_conn.commit()
+        crm_conn.close()
+        print("DEBUG: Successfully inserted into CRM_Customers")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to insert into CRM_Customers: {e}")
+        return None
+
+    # 2) Insert metadata into SQLite auth.db (this part stays the same)
+    try:
+        auth_conn = get_auth_connection()
+        auth_cursor = auth_conn.cursor()
+
+        approved_flag = 1 if auto_approve else 0
+        print(f"DEBUG: About to insert into customer_meta with approved={approved_flag}")
+        
+        auth_cursor.execute('''
+            INSERT OR REPLACE INTO customer_meta (CustomerID, assigned_to, status, approved, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (customer_id, assigned_to, 'Chưa bắt đầu', approved_flag, created_by))
+        
+        if not auto_approve:
+            notification_id = str(uuid.uuid4())
+            auth_cursor.execute('''
+                INSERT INTO notifications (id, user_id, message, type, related_id, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (notification_id, None, f"New customer '{company_name}' needs approval", "customer_approval", customer_id))
+
+        auth_conn.commit()
+        auth_conn.close()
+        print("DEBUG: Successfully committed all auth.db changes")
+        
+        return customer_id
+        
+    except Exception as e:
+        print(f"ERROR: Failed to insert into auth.db: {e}")
+        return None
 
 def get_customers_enhanced(user_id=None, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
-    if user_role == 'admin':
-        query = '''
-            SELECT c.*, u.name as assigned_name, g.GroupName
-            FROM customers c 
-            LEFT JOIN users u ON c.assigned_to = u.id 
-            LEFT JOIN customer_groups g ON c.GroupID = g.GroupID
-            WHERE c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn)
-    else:
-        query = '''
-            SELECT c.*, u.name as assigned_name, g.GroupName
-            FROM customers c 
-            LEFT JOIN users u ON c.assigned_to = u.id 
-            LEFT JOIN customer_groups g ON c.GroupID = g.GroupID
-            WHERE c.assigned_to = ? AND c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
-    return df
+    """
+    Fetch customers from CRM_Customers and enrich with auth data
+    """
+    # Get customers from SQL Server (using correct table name)
+    crm_conn = get_connection()
+    try:
+        crm_df = pd.read_sql_query('SELECT * FROM CRM_Customers', crm_conn)
+    except Exception as e:
+        print(f"Error fetching customers: {e}")
+        crm_df = pd.DataFrame()
+    crm_conn.close()
 
+    if crm_df.empty:
+        return crm_df
+
+    # Get meta from SQLite auth.db
+    auth_conn = get_auth_connection()
+    try:
+        meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
+    except Exception:
+        meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
+    try:
+        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id','name'])
+    try:
+        groups_df = pd.read_sql_query('SELECT GroupID, GroupName FROM customer_groups', auth_conn)
+    except Exception:
+        groups_df = pd.DataFrame(columns=['GroupID','GroupName'])
+    auth_conn.close()
+
+    # Merge dataframes
+    df = crm_df.merge(meta_df, on='CustomerID', how='left')
+
+    # Map assigned_to -> assigned_name
+    if not users_df.empty:
+        users_df = users_df.rename(columns={'id': 'assigned_to', 'name': 'assigned_name'})
+        df = df.merge(users_df, on='assigned_to', how='left')
+    else:
+        df['assigned_name'] = None
+
+    # Map GroupID -> GroupName
+    if not groups_df.empty:
+        df = df.merge(groups_df, on='GroupID', how='left')
+    else:
+        df['GroupName'] = None
+
+    # Normalize approved/status defaults
+    df['approved'] = df['approved'].fillna(0).astype(int)
+    df['status'] = df['status'].fillna('Chưa bắt đầu')
+
+    # Filter by role
+    if user_role == 'admin':
+        df_filtered = df[df['approved'] == 1]
+    else:
+        df_filtered = df[(df['assigned_to'] == user_id) & (df['approved'] == 1)]
+
+    return df_filtered.reset_index(drop=True)
+
+def generate_customer_id(country, category):
+    crm_conn = get_connection()
+    crm_cursor = crm_conn.cursor()
+    
+    prefix_map = {
+        'Vietnam': 'VND',
+        'United States': 'USD', 
+        'Singapore': 'SGD',
+        'Hong Kong': 'HKD',
+        'Japan': 'JPY'
+    }
+    
+    prefix = prefix_map.get(country, 'XXX') + category
+    
+    # FIXED: Using correct table name CRM_Customers
+    crm_cursor.execute('''
+        SELECT MAX(CAST(SUBSTRING(CustomerID, 5, 6) AS INT)) 
+        FROM CRM_Customers 
+        WHERE SUBSTRING(CustomerID, 1, 4) = ?
+    ''', (prefix,))
+    
+    result = crm_cursor.fetchone()[0]
+    max_id = result if result else 0
+    
+    new_id = f"{prefix}{str(max_id + 1).zfill(6)}"
+    crm_conn.close()
+    
+    return new_id
+
+# ---------- Pending customers (not approved) ----------
 def get_pending_customers():
-    conn = sqlite3.connect('crm_database.db')
-    df = pd.read_sql_query('''
-        SELECT c.*, u.name as assigned_name, g.GroupName
-        FROM customers c 
-        LEFT JOIN users u ON c.assigned_to = u.id 
-        LEFT JOIN customer_groups g ON c.GroupID = g.GroupID
-        WHERE c.approved = FALSE
-    ''', conn)
-    conn.close()
-    return df
+    # Fetch all customers then filter using auth.customer_meta.approved = 0
+    crm_conn = get_crm_connection()
+    try:
+        crm_df = pd.read_sql_query('SELECT * FROM CRM_Customers', crm_conn)
+    except Exception:
+        crm_df = pd.DataFrame()
+    crm_conn.close()
+
+    auth_conn = get_auth_connection()
+    try:
+        meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
+    except Exception:
+        meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
+    try:
+        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id','name'])
+    try:
+        groups_df = pd.read_sql_query('SELECT GroupID, GroupName FROM customer_groups', auth_conn)
+    except Exception:
+        groups_df = pd.DataFrame(columns=['GroupID','GroupName'])
+    auth_conn.close()
+
+    if crm_df.empty:
+        return crm_df
+
+    df = crm_df.merge(meta_df, on='CustomerID', how='left')
+    if not users_df.empty:
+        users_df = users_df.rename(columns={'id': 'assigned_to', 'name': 'assigned_name'})
+        df = df.merge(users_df, on='assigned_to', how='left')
+    else:
+        df['assigned_name'] = None
+    if not groups_df.empty:
+        df = df.merge(groups_df, on='GroupID', how='left')
+    else:
+        df['GroupName'] = None
+
+    df['approved'] = df['approved'].fillna(0).astype(int)
+    pending = df[df['approved'] == 0].reset_index(drop=True)
+    return pending
 
 def approve_customer(customer_id):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE customers SET approved = TRUE WHERE CustomerID = ?', (customer_id,))
-    conn.commit()
-    conn.close()
-
+    """Approve customer by updating the approved flag in SQLite auth.db"""
+    auth_conn = get_auth_connection()
+    cursor = auth_conn.cursor()
+    
+    # Check if record exists in customer_meta
+    cursor.execute('SELECT COUNT(*) FROM customer_meta WHERE CustomerID = ?', (customer_id,))
+    exists = cursor.fetchone()[0]
+    
+    if exists:
+        # Update existing record
+        cursor.execute('UPDATE customer_meta SET approved = 1 WHERE CustomerID = ?', (customer_id,))
+        print(f"Updated existing customer_meta record for {customer_id}")
+    else:
+        # Insert new record if it doesn't exist
+        cursor.execute('''
+            INSERT INTO customer_meta (CustomerID, approved, status, created_at)
+            VALUES (?, 1, 'Chưa bắt đầu', CURRENT_TIMESTAMP)
+        ''', (customer_id,))
+        print(f"Created new customer_meta record for {customer_id}")
+    
+    # Clear any pending approval notifications for this customer
+    cursor.execute('UPDATE notifications SET [read] = 1 WHERE related_id = ? AND type = ?', 
+                  (customer_id, 'customer_approval'))
+    
+    auth_conn.commit()
+    auth_conn.close()
+    
+    print(f"Customer {customer_id} approved successfully!")
+    
 def update_customer_status(customer_id, new_status):
-    conn = sqlite3.connect('crm_database.db')
+    conn = get_auth_connection()
     cursor = conn.cursor()
-    cursor.execute('UPDATE customers SET status = ? WHERE CustomerID = ?', (new_status, customer_id))
+
+    cursor.execute('SELECT COUNT(*) FROM customer_meta WHERE CustomerID = ?', (customer_id,))
+    res = cursor.fetchone()
+    exists = res[0] if res else 0
+
+    if exists:
+        cursor.execute('UPDATE customer_meta SET status = ? WHERE CustomerID = ?', (new_status, customer_id))
+    else:
+        cursor.execute('''
+            INSERT INTO customer_meta (CustomerID, status, approved, created_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (customer_id, new_status, 0))
+
     conn.commit()
     conn.close()
+    return True
 
-# Service management functions
+# ---------- Service management (SQL Server) ----------
 def add_service(customer_id, service_type, description, start_date, expected_end_date, package_code, partner):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    """Add service to CRM_Services table using correct columns"""
+    crm_conn = get_connection()
+    crm_cursor = crm_conn.cursor()
     
     service_id = f"DV{str(uuid.uuid4())[:6].upper()}"
     
-    cursor.execute('''
-        INSERT INTO services (ServiceID, CustomerID, ServiceType, Description, StartDate, ExpectedEndDate, PackageCode, Partner)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (service_id, customer_id, service_type, description, start_date, expected_end_date, package_code, partner))
+    # FIXED: Using actual CRM_Services columns
+    crm_cursor.execute('''
+        INSERT INTO CRM_Services (ServiceID, CustomerID, ServiceType, Description, StartDate, ExpectedEndDate, PackageCode, Partner, Status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (service_id, customer_id, service_type, description, start_date, expected_end_date, package_code, partner, 'Active'))
     
-    conn.commit()
-    conn.close()
+    crm_conn.commit()
+    crm_conn.close()
     return service_id
 
 def get_services_by_customer(customer_id):
-    conn = sqlite3.connect('crm_database.db')
-    df = pd.read_sql_query('SELECT * FROM services WHERE CustomerID = ?', conn, params=(customer_id,))
-    conn.close()
+    """Get services for a specific customer"""
+    crm_conn = get_connection()
+    try:
+        df = pd.read_sql_query('SELECT * FROM CRM_Services WHERE CustomerID = ?', crm_conn, params=(customer_id,))
+    except Exception:
+        df = pd.DataFrame()
+    crm_conn.close()
     return df
+
 
 def get_all_services(user_id=None, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
-    if user_role == 'admin':
-        query = '''
-            SELECT s.*, c.CompanyName, u.name as assigned_name
-            FROM services s
-            JOIN customers c ON s.CustomerID = c.CustomerID
-            LEFT JOIN users u ON c.assigned_to = u.id
-            WHERE c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn)
-    else:
-        query = '''
-            SELECT s.*, c.CompanyName, u.name as assigned_name
-            FROM services s
-            JOIN customers c ON s.CustomerID = c.CustomerID
-            LEFT JOIN users u ON c.assigned_to = u.id
-            WHERE c.assigned_to = ? AND c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
-    return df
+    """
+    Fetch services from CRM_Services and enrich with customer data
+    """
+    crm_conn = get_connection()
+    try:
+        # FIXED: Using correct table names
+        services_df = pd.read_sql_query('''
+            SELECT s.*, c.CompanyName 
+            FROM CRM_Services s
+            JOIN CRM_Customers c ON s.CustomerID = c.CustomerID
+        ''', crm_conn)
+    except Exception as e:
+        print(f"Error fetching services: {e}")
+        services_df = pd.DataFrame()
+    crm_conn.close()
+    
+    if services_df.empty:
+        return services_df
 
-# Work Progress functions
+    # Load meta from auth.db (this part is correct)
+    auth_conn = get_auth_connection()
+    try:
+        meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
+    except Exception:
+        meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
+    try:
+        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id','name'])
+    auth_conn.close()
+
+    # Merge dataframes
+    df = services_df.merge(meta_df, on='CustomerID', how='left')
+    if not users_df.empty:
+        users_df = users_df.rename(columns={'id': 'assigned_to', 'name': 'assigned_name'})
+        df = df.merge(users_df, on='assigned_to', how='left')
+    else:
+        df['assigned_name'] = None
+
+    df['approved'] = df['approved'].fillna(0).astype(int)
+    df['status'] = df['status'].fillna('Chưa bắt đầu')
+
+    # Filter by role
+    if user_role == 'admin':
+        df_filtered = df[df['approved'] == 1]
+    else:
+        df_filtered = df[(df['assigned_to'] == user_id) & (df['approved'] == 1)]
+
+    return df_filtered.reset_index(drop=True)
+
+# ---------- Work Progress (SQL Server) ----------
 def add_work_task(service_id, task_name, task_description, start_date, expected_end_date, updated_by):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    crm_conn = get_crm_connection()
+    crm_cursor = crm_conn.cursor()
     
     task_id = f"CV{str(uuid.uuid4())[:6].upper()}"
     
-    cursor.execute('''
-        INSERT INTO work_progress (TaskID, ServiceID, TaskName, TaskDescription, StartDate, ExpectedEndDate, UpdatedBy)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (task_id, service_id, task_name, task_description, start_date, expected_end_date, updated_by))
+    crm_cursor.execute('''
+        INSERT INTO WorkProgress (TaskID, ServiceID, TaskName, TaskDescription, StartDate, ExpectedEndDate, UpdatedBy, LastUpdated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (task_id, service_id, task_name, task_description, start_date, expected_end_date, updated_by, datetime.now().date()))
     
-    conn.commit()
-    conn.close()
+    crm_conn.commit()
+    crm_conn.close()
     return task_id
 
+
 def get_work_progress(user_id=None, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
-    if user_role == 'admin':
-        query = '''
-            SELECT wp.*, s.ServiceType, c.CompanyName, u1.name as updated_by_name
-            FROM work_progress wp
-            JOIN services s ON wp.ServiceID = s.ServiceID
-            JOIN customers c ON s.CustomerID = c.CustomerID
-            LEFT JOIN users u1 ON wp.UpdatedBy = u1.id
-            WHERE c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn)
+    """
+    Fetch work progress from SQL Server and enrich with auth.db user names and customer meta.
+    """
+    crm_conn = get_crm_connection()
+    try:
+        wp_df = pd.read_sql_query('''
+            SELECT wp.*, s.ServiceType, s.CustomerID, c.CompanyName
+            FROM WorkProgress wp
+            JOIN Services s ON wp.ServiceID = s.ServiceID
+            JOIN Customers c ON s.CustomerID = c.CustomerID
+        ''', crm_conn)
+    except Exception:
+        wp_df = pd.DataFrame()
+    crm_conn.close()
+    
+    if wp_df.empty:
+        return wp_df
+
+    # enrich from auth.db
+    auth_conn = get_auth_connection()
+    try:
+        meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, approved FROM customer_meta', auth_conn)
+    except Exception:
+        meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','approved'])
+    try:
+        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id','name'])
+    auth_conn.close()
+
+    df = wp_df.merge(meta_df, on='CustomerID', how='left')
+
+    # map updated_by id -> name
+    if not users_df.empty:
+        users_df = users_df.rename(columns={'id': 'UpdatedBy', 'name': 'updated_by_name'})
+        df = df.merge(users_df, on='UpdatedBy', how='left')
     else:
-        query = '''
-            SELECT wp.*, s.ServiceType, c.CompanyName, u1.name as updated_by_name
-            FROM work_progress wp
-            JOIN services s ON wp.ServiceID = s.ServiceID
-            JOIN customers c ON s.CustomerID = c.CustomerID
-            LEFT JOIN users u1 ON wp.UpdatedBy = u1.id
-            WHERE c.assigned_to = ? AND c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
-    return df
+        df['updated_by_name'] = None
+
+    df['approved'] = df['approved'].fillna(0).astype(int)
+
+    # Filter by role
+    if user_role == 'admin':
+        df_filtered = df[df['approved'] == 1]
+    else:
+        df_filtered = df[(df['assigned_to'] == user_id) & (df['approved'] == 1)]
+
+    return df_filtered.reset_index(drop=True)
+
 
 def update_task_status(task_id, new_status, progress, updated_by, notes=""):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    """
+    Update task status in SQL Server. Use Python to set LastUpdated (safer cross-DB).
+    """
+    crm_conn = get_crm_connection()
+    cursor = crm_conn.cursor()
+    last_updated = datetime.now().date()
     cursor.execute('''
-        UPDATE work_progress 
-        SET Status = ?, Progress = ?, UpdatedBy = ?, Notes = ?, LastUpdated = date('now')
+        UPDATE WorkProgress
+        SET Status = ?, Progress = ?, UpdatedBy = ?, Notes = ?, LastUpdated = ?
         WHERE TaskID = ?
-    ''', (new_status, progress, updated_by, notes, task_id))
-    conn.commit()
-    conn.close()
+    ''', (new_status, progress, updated_by, notes, last_updated, task_id))
+    crm_conn.commit()
+    crm_conn.close()
 
-# Payment functions
-def add_payment(service_id, currency, original_amount, exchange_rate, deposit_amount=0, notes=""):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+# ---------- Invoice (SQL Server) ----------
+def add_invoice(service_id, customer_id, amount_original, currency, due_date, notes=""):
+    """Add invoice to CRM_Invoice table"""
+    crm_conn = get_connection()
+    cursor = crm_conn.cursor()
     
-    payment_id = f"TT{str(uuid.uuid4())[:6].upper()}"
-    converted_amount = original_amount * exchange_rate if exchange_rate else original_amount
+    invoice_id = f"INV{str(uuid.uuid4())[:6].upper()}"
+    invoice_code = f"CODE{str(uuid.uuid4())[:4].upper()}"
+    invoice_date = datetime.now().date()
+    
+    # Convert to USD if needed (you'll need exchange rates)
+    amount_usd = amount_original  # Placeholder - implement currency conversion
     
     cursor.execute('''
-        INSERT INTO payments (PaymentID, ServiceID, Currency, OriginalAmount, ExchangeRate, ConvertedAmount, DepositAmount, Notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (payment_id, service_id, currency, original_amount, exchange_rate, converted_amount, deposit_amount, notes))
+        INSERT INTO CRM_Invoice (InvoiceCode, InvoiceID, ServiceID, CustomerID, InvoiceDate, DueDate, AmountOriginal, AmountUSD, Status, Note, OutstandingUSD)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (invoice_code, invoice_id, service_id, customer_id, invoice_date, due_date, amount_original, amount_usd, 'Pending', notes, amount_usd))
     
-    conn.commit()
-    conn.close()
-    return payment_id
+    crm_conn.commit()
+    crm_conn.close()
+    return invoice_id
 
-def get_payments_by_service(service_id):
-    conn = sqlite3.connect('crm_database.db')
-    df = pd.read_sql_query('SELECT * FROM payments WHERE ServiceID = ?', conn, params=(service_id,))
-    conn.close()
+def get_invoices_by_service(service_id):
+    """Get invoices for a specific service"""
+    crm_conn = get_connection()
+    try:
+        df = pd.read_sql_query('SELECT * FROM CRM_Invoice WHERE ServiceID = ?', crm_conn, params=(service_id,))
+    except Exception:
+        df = pd.DataFrame()
+    crm_conn.close()
     return df
 
 def update_payment(payment_id, first_amount=None, first_date=None, second_amount=None, second_date=None):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    crm_conn = get_crm_connection()
+    cursor = crm_conn.cursor()
     
     updates = []
     values = []
@@ -598,150 +725,196 @@ def update_payment(payment_id, first_amount=None, first_date=None, second_amount
     
     if updates:
         values.append(payment_id)
-        cursor.execute(f'UPDATE payments SET {", ".join(updates)} WHERE PaymentID = ?', values)
-        conn.commit()
+        sql = f'UPDATE Payments SET {", ".join(updates)} WHERE PaymentID = ?'
+        cursor.execute(sql, values)
+        crm_conn.commit()
     
-    conn.close()
+    crm_conn.close()
 
+
+# --------------------------
 # Document functions
+# --------------------------
 def add_document(customer_id, service_id, document_type, document_name, responsible_person, notes=""):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    
+    """
+    Store documents in SQL Server (ClientDocuments). responsible_person is a user id stored in auth.db.
+    """
+    crm_conn = get_crm_connection()
+    cursor = crm_conn.cursor()
+
     doc_id = f"DOC{str(uuid.uuid4())[:6].upper()}"
-    
+    created_date = datetime.now().date()
+
     cursor.execute('''
-        INSERT INTO client_documents (DocumentID, CustomerID, ServiceID, DocumentType, DocumentName, ResponsiblePerson, Notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (doc_id, customer_id, service_id, document_type, document_name, responsible_person, notes))
-    
-    conn.commit()
-    conn.close()
+        INSERT INTO ClientDocuments
+        (DocumentID, CustomerID, ServiceID, DocumentType, DocumentName, ResponsiblePerson, Notes, CreatedDate)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (doc_id, customer_id, service_id, document_type, document_name, responsible_person, notes, created_date))
+
+    crm_conn.commit()
+    crm_conn.close()
     return doc_id
 
+
 def get_documents(user_id=None, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
-    if user_role == 'admin':
-        query = '''
-            SELECT cd.*, c.CompanyName, s.ServiceType, u.name as responsible_name
-            FROM client_documents cd
-            JOIN customers c ON cd.CustomerID = c.CustomerID
-            LEFT JOIN services s ON cd.ServiceID = s.ServiceID
-            LEFT JOIN users u ON cd.ResponsiblePerson = u.id
-            WHERE c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn)
+    """
+    Fetch documents from SQL Server and enrich with auth.db (responsible_name + assigned/meta).
+    Admins see documents for approved customers; others see docs for their assigned customers.
+    Returns a pandas DataFrame.
+    """
+    # 1) Load documents + customer/service info from CRM
+    crm_conn = get_crm_connection()
+    try:
+        docs_df = pd.read_sql_query('''
+            SELECT cd.DocumentID, cd.CustomerID, cd.ServiceID, cd.DocumentType, cd.DocumentName,
+                   cd.ResponsiblePerson, cd.Notes, cd.Status, cd.CreatedDate,
+                   c.CompanyName, s.ServiceType
+            FROM ClientDocuments cd
+            JOIN Customers c ON cd.CustomerID = c.CustomerID
+            LEFT JOIN Services s ON cd.ServiceID = s.ServiceID
+        ''', crm_conn)
+    except Exception:
+        docs_df = pd.DataFrame()
+    crm_conn.close()
+
+    if docs_df.empty:
+        return docs_df
+
+    # 2) Load auth metadata from SQLite
+    auth_conn = get_auth_connection()
+    try:
+        meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
+    except Exception:
+        meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
+    try:
+        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id','name'])
+    auth_conn.close()
+
+    # 3) Merge
+    df = docs_df.merge(meta_df, on='CustomerID', how='left')
+
+    # map responsible_person -> name
+    if not users_df.empty:
+        users_df = users_df.rename(columns={'id': 'ResponsiblePerson', 'name': 'responsible_name'})
+        df = df.merge(users_df, on='ResponsiblePerson', how='left')
     else:
-        query = '''
-            SELECT cd.*, c.CompanyName, s.ServiceType, u.name as responsible_name
-            FROM client_documents cd
-            JOIN customers c ON cd.CustomerID = c.CustomerID
-            LEFT JOIN services s ON cd.ServiceID = s.ServiceID
-            LEFT JOIN users u ON cd.ResponsiblePerson = u.id
-            WHERE c.assigned_to = ? AND c.approved = TRUE
-        '''
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
-    return df
+        df['responsible_name'] = None
+
+    # normalize flags
+    df['approved'] = df['approved'].fillna(0).astype(int)
+    df['status'] = df['status'].fillna('Chưa bắt đầu')
+
+    # 4) filter by role
+    if user_role == 'admin':
+        df_filtered = df[df['approved'] == 1]
+    else:
+        df_filtered = df[(df['assigned_to'] == user_id) & (df['approved'] == 1)]
+
+    return df_filtered.reset_index(drop=True)
+
 
 def update_document_status(doc_id, new_status):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE client_documents SET Status = ? WHERE DocumentID = ?', (new_status, doc_id))
-    conn.commit()
-    conn.close()
+    """
+    Update document status in SQL Server.
+    """
+    crm_conn = get_crm_connection()
+    cursor = crm_conn.cursor()
+    cursor.execute('UPDATE ClientDocuments SET Status = ? WHERE DocumentID = ?', (new_status, doc_id))
+    crm_conn.commit()
+    crm_conn.close()
+    return True
 
-# Notification functions
+
+# --------------------------
+# Notification functions (SQLite auth.db)
+# --------------------------
 def get_notifications(user_id, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
+    auth_conn = get_auth_connection()
     if user_role == 'admin':
         query = '''
-            SELECT n.*, u.name as target_user_name 
-            FROM notifications n 
-            LEFT JOIN users u ON n.user_id = u.id 
+            SELECT n.*, u.name as target_user_name
+            FROM notifications n
+            LEFT JOIN users u ON n.user_id = u.id
             ORDER BY n.created_at DESC
         '''
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, auth_conn)
     else:
         query = '''
-            SELECT n.*, u.name as target_user_name 
-            FROM notifications n 
-            LEFT JOIN users u ON n.user_id = u.id 
-            WHERE n.user_id = ? 
+            SELECT n.*, u.name as target_user_name
+            FROM notifications n
+            LEFT JOIN users u ON n.user_id = u.id
+            WHERE n.user_id = ?
             ORDER BY n.created_at DESC
         '''
-        df = pd.read_sql_query(query, conn, params=(user_id,))
-    conn.close()
+        df = pd.read_sql_query(query, auth_conn, params=(user_id,))
+    auth_conn.close()
     return df
 
+
 def get_unread_count(user_id, user_role=None):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+    auth_conn = get_auth_connection()
+    cursor = auth_conn.cursor()
     if user_role == 'admin':
-        cursor.execute('SELECT COUNT(*) FROM notifications WHERE read = FALSE')
+        cursor.execute('SELECT COUNT(*) FROM notifications WHERE [read] = 0')
     else:
-        cursor.execute('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read = FALSE', (user_id,))
+        cursor.execute('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND [read] = 0', (user_id,))
     count = cursor.fetchone()[0]
-    conn.close()
+    auth_conn.close()
     return count
 
+
 def mark_notification_read(notification_id):
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE notifications SET read = TRUE WHERE id = ?', (notification_id,))
-    conn.commit()
-    conn.close()
+    auth_conn = get_auth_connection()
+    cursor = auth_conn.cursor()
+    cursor.execute('UPDATE notifications SET [read] = 1 WHERE id = ?', (notification_id,))
+    auth_conn.commit()
+    auth_conn.close()
+    return True
 
+
+# --------------------------
+# Dashboard stats (cross-db aggregation)
+# --------------------------
 def get_dashboard_stats():
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    
-    # Task status counts
-    cursor.execute('''
-        SELECT Status, COUNT(*) as count
-        FROM work_progress
-        GROUP BY Status
-    ''')
-    task_stats = cursor.fetchall()
-    
-    # Customer progress
-    cursor.execute('''
-        SELECT c.CustomerID, c.CompanyName, 
-               COUNT(wp.TaskID) as total_tasks,
-               SUM(CASE WHEN wp.Status = 'Hoàn thành' THEN 1 ELSE 0 END) as completed_tasks
-        FROM customers c
-        LEFT JOIN services s ON c.CustomerID = s.CustomerID
-        LEFT JOIN work_progress wp ON s.ServiceID = wp.ServiceID
-        WHERE c.approved = TRUE
-        GROUP BY c.CustomerID, c.CompanyName
-        HAVING total_tasks > 0
-    ''')
-    customer_progress = cursor.fetchall()
-    
-    # Overdue tasks
-    cursor.execute('''
-        SELECT TaskID, TaskName, Status, LastUpdated
-        FROM work_progress
-        WHERE Status != 'Hoàn thành' 
-        AND date(LastUpdated) < date('now', '-7 days')
-    ''')
-    overdue_tasks = cursor.fetchall()
-    
-    conn.close()
-    
-    return {
-        'task_stats': task_stats,
-        'customer_progress': customer_progress,
-        'overdue_tasks': overdue_tasks
-    }
+    """Get dashboard statistics from actual tables"""
+    try:
+        crm_conn = get_connection()
+        
+        # Get basic counts
+        customer_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Customers", crm_conn)['count'].iloc[0]
+        service_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Services", crm_conn)['count'].iloc[0]
+        invoice_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Invoice", crm_conn)['count'].iloc[0]
+        
+        # Service status distribution
+        service_status = pd.read_sql_query("SELECT Status, COUNT(*) as count FROM CRM_Services GROUP BY Status", crm_conn)
+        task_stats = list(service_status.itertuples(index=False, name=None))
+        
+        crm_conn.close()
+        
+        return {
+            'customer_count': customer_count,
+            'service_count': service_count, 
+            'invoice_count': invoice_count,
+            'task_stats': task_stats,
+            'customer_progress': [],  # Would need more complex query
+            'overdue_tasks': []  # Would need WorkProgress table or equivalent
+        }
+    except Exception as e:
+        print(f"Error getting dashboard stats: {e}")
+        return {
+            'customer_count': 0,
+            'service_count': 0,
+            'invoice_count': 0,
+            'task_stats': [],
+            'customer_progress': [],
+            'overdue_tasks': []
+        }
 
-# Session state initialization
-if 'user' not in st.session_state:
-    st.session_state.user = None
-if 'page' not in st.session_state:
-    st.session_state.page = 'login'
-
-# Login page
+# --------------------------
+# Login page (no DB change required; kept for completeness)
+# --------------------------
 def login_page():
     st.title("CRM System - Login")
     
@@ -760,11 +933,13 @@ def login_page():
                 st.error("Invalid email or password")
 
 
-# Modified show_customers function with delete functionality
+# --------------------------
+# show_customers (fixed edit / update to use SQL Server)
+# --------------------------
 def show_customers():
     st.header("Customer Management")
     
-    # Add new customer
+    # Add new customer (existing add_customer_enhanced handles cross-db correctly)
     with st.expander("Add New Customer"):
         with st.form("add_customer"):
             col1, col2 = st.columns(2)
@@ -773,7 +948,7 @@ def show_customers():
                 company_name = st.text_input("Company Name*")
                 tax_code = st.text_input("Tax Code")
                 
-                # Get customer groups
+                # Get customer groups (from auth.db)
                 groups_df = get_customer_groups()
                 if len(groups_df) > 0:
                     group_id = st.selectbox("Customer Group", 
@@ -793,7 +968,7 @@ def show_customers():
                                                 ('C', 'Company (Doanh nghiệp)')],
                                                format_func=lambda x: x[1])
                 
-                customer_type = st.text_input("Customer Type", 
+                company_type = st.text_input("Company Type", 
                                             value=dict([('I', 'Cá nhân'), ('H', 'Hộ kinh doanh'), ('C', 'Doanh nghiệp')])[customer_category[0]])
             
             with col2:
@@ -808,7 +983,7 @@ def show_customers():
                 industry = st.text_input("Industry")
                 source = st.selectbox("Source", ['Facebook', 'Website', 'Giới thiệu', 'Google Ads', 'Email Marketing', 'Other'])
                 
-                # Assign to employee
+                # Assign to employee (from auth.db)
                 users_df = get_all_users()
                 employee_users = users_df[users_df['role'] == 'employee']
                 if len(employee_users) > 0:
@@ -830,7 +1005,7 @@ def show_customers():
                     auto_approve = st.session_state.user['role'] == 'admin'
                     customer_id = add_customer_enhanced(
                         company_name, tax_code, group_id, address, country, customer_category[0],
-                        customer_type, contact_person1, contact_email1, contact_phone1,
+                        company_type, contact_person1, contact_email1, contact_phone1,
                         contact_person2, contact_email2, contact_phone2, industry, source,
                         assigned_to, st.session_state.user['id'], auto_approve
                     )
@@ -871,31 +1046,31 @@ def show_customers():
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write(f"**Tax Code:** {customer['TaxCode'] or 'N/A'}")
-                    st.write(f"**Address:** {customer['Address'] or 'N/A'}")
-                    st.write(f"**Country:** {customer['Country']}")
-                    st.write(f"**Category:** {customer['CustomerCategory']} - {customer['CustomerType']}")
-                    st.write(f"**Industry:** {customer['Industry'] or 'N/A'}")
-                    st.write(f"**Source:** {customer['Source'] or 'N/A'}")
+                    st.write(f"**Tax Code:** {customer.get('TaxCode') or 'N/A'}")
+                    st.write(f"**Address:** {customer.get('Address') or 'N/A'}")
+                    st.write(f"**Country:** {customer.get('Country')}")
+                    st.write(f"**Category:** {customer.get('CustomerCategory')} - {customer.get('CompanyType')}")  # FIXED: use CompanyType
+                    st.write(f"**Industry:** {customer.get('Industry') or 'N/A'}")
+                    st.write(f"**Source:** {customer.get('Source') or 'N/A'}")
                 
                 with col2:
-                    st.write(f"**Primary Contact:** {customer['ContactPerson1']}")
-                    st.write(f"**Primary Email:** {customer['ContactEmail1'] or 'N/A'}")
-                    st.write(f"**Primary Phone:** {customer['ContactPhone1'] or 'N/A'}")
-                    if customer['ContactPerson2']:
-                        st.write(f"**Secondary Contact:** {customer['ContactPerson2']}")
-                        st.write(f"**Secondary Email:** {customer['ContactEmail2'] or 'N/A'}")
-                        st.write(f"**Secondary Phone:** {customer['ContactPhone2'] or 'N/A'}")
-                    st.write(f"**Assigned to:** {customer['assigned_name']}")
-                    st.write(f"**Group:** {customer['GroupName'] or 'N/A'}")
+                    st.write(f"**Primary Contact:** {customer.get('ContactPerson1')}")
+                    st.write(f"**Primary Email:** {customer.get('ContactEmail1') or 'N/A'}")
+                    st.write(f"**Primary Phone:** {customer.get('ContactPhone1') or 'N/A'}")
+                    if customer.get('ContactPerson2'):
+                        st.write(f"**Secondary Contact:** {customer.get('ContactPerson2')}")
+                        st.write(f"**Secondary Email:** {customer.get('ContactEmail2') or 'N/A'}")
+                        st.write(f"**Secondary Phone:** {customer.get('ContactPhone2') or 'N/A'}")
+                    st.write(f"**Assigned to:** {customer.get('assigned_name')}")
+                    st.write(f"**Group:** {customer.get('GroupName') or 'N/A'}")
                 
                 # Action buttons
                 col1, col2, col3 = st.columns(3)
                 
                 # Status update
-                current_status = customer['status']
+                current_status = customer.get('status')
                 can_edit = (st.session_state.user['role'] == 'admin' or 
-                          customer['assigned_to'] == st.session_state.user['id'])
+                          customer.get('assigned_to') == st.session_state.user['id'])
                 
                 with col1:
                     if can_edit:
@@ -915,10 +1090,32 @@ def show_customers():
                         st.write(f"**Status:** {current_status}")
                 
                 with col2:
-                    # Edit button (placeholder for future implementation)
                     if can_edit:
-                        if st.button("Edit", key=f"edit_{customer['CustomerID']}", disabled=True):
-                            st.info("Edit functionality coming soon!")
+                        if st.button("Edit", key=f"edit_{customer['CustomerID']}"):
+                            # Simple edit form (you can expand with more fields later)
+                            with st.form(key=f"edit_form_{customer['CustomerID']}"):
+                                new_name = st.text_input("Company Name", customer["CompanyName"])
+                                new_address = st.text_input("Address", customer.get("Address", ""))
+                                new_email = st.text_input("Contact Email", customer.get("ContactEmail1", ""))
+                                submitted = st.form_submit_button("Save changes")
+                                
+                                if submitted:
+                                    # FIXED: Update CRM_Customers table
+                                    crm_conn = get_crm_connection()
+                                    cursor = crm_conn.cursor()
+                                    cursor.execute(
+                                        """
+                                        UPDATE CRM_Customers
+                                        SET CompanyName = ?, Address = ?, ContactEmail1 = ?
+                                        WHERE CustomerID = ?
+                                        """,
+                                        (new_name, new_address, new_email, customer["CustomerID"])
+                                    )
+                                    crm_conn.commit()
+                                    crm_conn.close()
+                                    st.success("Customer updated successfully!")
+                                    st.rerun()  # FIXED: use st.rerun() instead of st.experimental_rerun()
+
                 
                 with col3:
                     # Delete button (admin only)
@@ -929,7 +1126,7 @@ def show_customers():
                         
                         # Show confirmation if delete was clicked
                         if st.session_state.get(f"confirm_delete_{customer['CustomerID']}", False):
-                            st.warning(f"Are you sure you want to delete {customer['CompanyName']}? This will also delete all related services, tasks, documents, and payments.")
+                            st.warning(f"Are you sure you want to delete {customer['CompanyName']}? This will also delete all related services and invoices.")
                             
                             col_yes, col_no = st.columns(2)
                             with col_yes:
@@ -953,7 +1150,9 @@ def show_customers():
     else:
         st.info("No customers found. Add your first customer above!")
 
-# Modified show_user_management function with delete functionality
+# --------------------------
+# Modified show_user_management function
+# --------------------------
 def show_user_management():
     st.header("User Management")
     
@@ -1009,7 +1208,7 @@ def show_user_management():
                     else:
                         st.error("Failed to add user. Email might already exist.")
     
-    # Display users
+    # Display users (from auth.db)
     st.subheader("User List")
     users_df = get_all_users()
     
@@ -1024,17 +1223,17 @@ def show_user_management():
                     st.write(f"**Role:** {user['role'].title()}")
                 
                 with col2:
-                    # Get user's assigned customers count
-                    conn = sqlite3.connect('crm_database.db')
-                    cursor = conn.cursor()
-                    cursor.execute('SELECT COUNT(*) FROM customers WHERE assigned_to = ?', (user['id'],))
+                    # Get user's assigned customers count (from customer_meta in SQLite)
+                    auth_conn = get_auth_connection()
+                    cursor = auth_conn.cursor()
+                    cursor.execute('SELECT COUNT(*) FROM customer_meta WHERE assigned_to = ?', (user['id'],))
                     customer_count = cursor.fetchone()[0]
-                    conn.close()
+                    auth_conn.close()
                     
                     st.write(f"**Assigned Customers:** {customer_count}")
                     
                     # Edit button (placeholder)
-                    if st.button("Edit", key=f"edit_user_{user['id']}", disabled=True):
+                    if st.button("Edit", key=f"edit_user_{user['id']}"):
                         st.info("Edit functionality coming soon!")
                 
                 with col3:
@@ -1070,214 +1269,6 @@ def show_user_management():
                         st.info("Cannot delete yourself")
     else:
         st.info("No users found.")
-
-# Main dashboard
-def main_dashboard():
-    st.title(f"Welcome, {st.session_state.user['name']}")
-    
-    # Sidebar navigation
-    st.sidebar.title("Navigation")
-    
-    if st.sidebar.button("Dashboard"):
-        st.session_state.page = 'dashboard'
-    if st.sidebar.button("Customers"):
-        st.session_state.page = 'customers'
-    if st.sidebar.button("Services"):
-        st.session_state.page = 'services'
-    if st.sidebar.button("Work Progress"):
-        st.session_state.page = 'work_progress'
-    if st.sidebar.button("Documents"):
-        st.session_state.page = 'documents'
-    if st.sidebar.button("Payments"):
-        st.session_state.page = 'payments'
-    
-    unread_count = get_unread_count(st.session_state.user['id'], st.session_state.user['role'])
-    notification_label = f"Notifications ({unread_count})" if unread_count > 0 else "Notifications"
-    
-    if st.sidebar.button(notification_label):
-        st.session_state.page = 'notifications'
-    
-    if st.session_state.user['role'] == 'admin':
-        if st.sidebar.button("User Management"):
-            st.session_state.page = 'users'
-        if st.sidebar.button("Approvals"):
-            st.session_state.page = 'approvals'
-    
-    st.sidebar.divider()
-    if st.sidebar.button("Logout"):
-        st.session_state.user = None
-        st.session_state.page = 'login'
-        st.rerun()
-    
-    # Main content
-    if st.session_state.page == 'dashboard':
-        show_dashboard()
-    elif st.session_state.page == 'customers':
-        show_customers()
-    elif st.session_state.page == 'services':
-        show_services()
-    elif st.session_state.page == 'work_progress':
-        show_work_progress()
-    elif st.session_state.page == 'documents':
-        show_documents()
-    elif st.session_state.page == 'payments':
-        show_payments()
-    elif st.session_state.page == 'notifications':
-        show_notifications()
-    elif st.session_state.page == 'users' and st.session_state.user['role'] == 'admin':
-        show_user_management()
-    elif st.session_state.page == 'approvals' and st.session_state.user['role'] == 'admin':
-        show_approvals()
-
-def show_dashboard():
-    st.header("Dashboard Overview")
-    
-    # Get dashboard statistics
-    stats = get_dashboard_stats()
-    
-    # Key metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    customers_df = get_customers_enhanced(st.session_state.user['id'], st.session_state.user['role'])
-    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
-    work_df = get_work_progress(st.session_state.user['id'], st.session_state.user['role'])
-    
-    with col1:
-        st.metric("Total Customers", len(customers_df))
-    with col2:
-        st.metric("Active Services", len(services_df))
-    with col3:
-        active_tasks = len(work_df[work_df['Status'] != 'Hoàn thành'])
-        st.metric("Active Tasks", active_tasks)
-    with col4:
-        completed_tasks = len(work_df[work_df['Status'] == 'Hoàn thành'])
-        st.metric("Completed Tasks", completed_tasks)
-    
-    # Task status overview
-    st.subheader("Task Status Overview")
-    if stats['task_stats']:
-        task_df = pd.DataFrame(stats['task_stats'], columns=['Status', 'Count'])
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.bar_chart(task_df.set_index('Status'))
-        with col2:
-            st.dataframe(task_df, use_container_width=True)
-    else:
-        st.info("No task data available yet")
-    
-    # Customer progress
-    st.subheader("Customer Progress Summary")
-    if stats['customer_progress']:
-        progress_data = []
-        for customer_id, company_name, total_tasks, completed_tasks in stats['customer_progress']:
-            completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
-            progress_data.append({
-                'Customer': company_name,
-                'Total Tasks': total_tasks,
-                'Completed': completed_tasks,
-                'Completion %': f"{completion_rate:.1f}%"
-            })
-        st.dataframe(pd.DataFrame(progress_data), use_container_width=True)
-    else:
-        st.info("No customer progress data available")
-    
-    # Overdue tasks warning
-    if stats['overdue_tasks']:
-        st.subheader("⚠️ Overdue Tasks")
-        overdue_data = []
-        for task_id, task_name, status, last_updated in stats['overdue_tasks']:
-            overdue_data.append({
-                'Task ID': task_id,
-                'Task Name': task_name,
-                'Status': status,
-                'Last Updated': last_updated
-            })
-        st.dataframe(pd.DataFrame(overdue_data), use_container_width=True)
-
-def show_services():
-    st.header("Service Management")
-    
-    # Add new service
-    with st.expander("Add New Service"):
-        with st.form("add_service"):
-            # Get customers for service assignment
-            customers_df = get_customers_enhanced(st.session_state.user['id'], st.session_state.user['role'])
-            
-            if len(customers_df) > 0:
-                customer_id = st.selectbox("Customer", 
-                                         options=customers_df['CustomerID'].tolist(),
-                                         format_func=lambda x: f"{x} - {customers_df[customers_df['CustomerID']==x]['CompanyName'].iloc[0]}")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    service_type = st.text_input("Service Type*")
-                    start_date = st.date_input("Start Date")
-                    package_code = st.text_input("Package Code")
-                
-                with col2:
-                    expected_end_date = st.date_input("Expected End Date")
-                    partner = st.text_input("Partner Company")
-                
-                description = st.text_area("Service Description")
-                
-                submit_service = st.form_submit_button("Add Service")
-                
-                if submit_service:
-                    if not service_type:
-                        st.error("Service Type is required!")
-                    else:
-                        service_id = add_service(customer_id, service_type, description, 
-                                               start_date, expected_end_date, package_code, partner)
-                        st.success(f"Service added successfully! ID: {service_id}")
-                        st.rerun()
-            else:
-                st.warning("No customers available. Add customers first.")
-    
-    # Display services
-    st.subheader("Service List")
-    
-    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
-    
-    if len(services_df) > 0:
-        for idx, service in services_df.iterrows():
-            with st.expander(f"{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**Customer:** {service['CompanyName']}")
-                    st.write(f"**Service Type:** {service['ServiceType']}")
-                    st.write(f"**Status:** {service['Status']}")
-                    st.write(f"**Package Code:** {service['PackageCode'] or 'N/A'}")
-                
-                with col2:
-                    st.write(f"**Start Date:** {service['StartDate']}")
-                    st.write(f"**Expected End Date:** {service['ExpectedEndDate']}")
-                    st.write(f"**Partner:** {service['Partner'] or 'N/A'}")
-                    st.write(f"**Assigned to:** {service['assigned_name']}")
-                
-                if service['Description']:
-                    st.write(f"**Description:** {service['Description']}")
-                
-                # Service actions
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("View Tasks", key=f"tasks_{service['ServiceID']}"):
-                        st.session_state.selected_service = service['ServiceID']
-                        st.session_state.page = 'work_progress'
-                        st.rerun()
-                
-                with col2:
-                    if st.button("View Payments", key=f"payments_{service['ServiceID']}"):
-                        st.session_state.selected_service = service['ServiceID']
-                        st.session_state.page = 'payments'
-                        st.rerun()
-                
-                with col3:
-                    if st.button("Add Task", key=f"add_task_{service['ServiceID']}"):
-                        st.session_state.selected_service_for_task = service['ServiceID']
-    else:
-        st.info("No services found. Add your first service above!")
 
 def show_work_progress():
     st.header("Work Progress & Tasks")
@@ -1647,7 +1638,7 @@ def show_approvals():
                     st.write(f"**Tax Code:** {customer['TaxCode'] or 'N/A'}")
                     st.write(f"**Address:** {customer['Address'] or 'N/A'}")
                     st.write(f"**Country:** {customer['Country']}")
-                    st.write(f"**Category:** {customer['CustomerCategory']} - {customer['CustomerType']}")
+                    st.write(f"**Category:** {customer['CustomerCategory']} - {customer['CompanyType']}")
                 
                 with col2:
                     st.write(f"**Primary Contact:** {customer['ContactPerson1']}")
@@ -1661,38 +1652,15 @@ def show_approvals():
                 with col1:
                     if st.button(f"✅ Approve", key=f"approve_{customer['CustomerID']}", type="primary"):
                         approve_customer(customer['CustomerID'])
-                        
-                        # Send approval email to assigned employee
-                        if customer['ContactEmail1']:
-                            subject = f"Customer Approved: {customer['CompanyName']}"
-                            body = f"""
-                            Hello,
-
-                            The customer '{customer['CompanyName']}' (ID: {customer['CustomerID']}) has been approved and is now active in the system.
-
-                            You can now begin working with this customer and managing their services.
-
-                            Customer Details:
-                            - Company: {customer['CompanyName']}
-                            - Contact: {customer['ContactPerson1']}
-                            - Email: {customer['ContactEmail1']}
-                            - Phone: {customer['ContactPhone1']}
-
-                            Best regards,
-                            CRM System
-                            """
-                            send_email(customer['ContactEmail1'], subject, body)
-                        
                         st.success(f"Customer {customer['CompanyName']} approved!")
                         st.rerun()
                 
                 with col2:
                     if st.button(f"❌ Reject", key=f"reject_{customer['CustomerID']}"):
-                        # You might want to implement a rejection function
-                        # For now, we'll just delete the customer
-                        conn = sqlite3.connect('crm_database.db')
+                        # FIXED: Simplified delete
+                        conn = get_connection()
                         cursor = conn.cursor()
-                        cursor.execute('DELETE FROM customers WHERE CustomerID = ?', (customer['CustomerID'],))
+                        cursor.execute("DELETE FROM CRM_Customers WHERE CustomerID = ?", (customer['CustomerID'],))
                         conn.commit()
                         conn.close()
                         
@@ -1751,180 +1719,304 @@ def show_reports():
         # Progress histogram
         st.bar_chart(work_df['Progress'].value_counts().sort_index())
 
-def export_data():
-    st.header("Data Export")
-    
-    export_options = st.multiselect(
-        "Select data to export:",
-        ["Customers", "Services", "Work Progress", "Documents", "Payments"],
-        default=["Customers"]
-    )
-    
-    if st.button("Generate Export"):
-        export_data = {}
-        
-        if "Customers" in export_options:
-            customers_df = get_customers_enhanced(st.session_state.user['id'], st.session_state.user['role'])
-            export_data['customers'] = customers_df
-        
-        if "Services" in export_options:
-            services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
-            export_data['services'] = services_df
-        
-        if "Work Progress" in export_options:
-            work_df = get_work_progress(st.session_state.user['id'], st.session_state.user['role'])
-            export_data['work_progress'] = work_df
-        
-        if "Documents" in export_options:
-            documents_df = get_documents(st.session_state.user['id'], st.session_state.user['role'])
-            export_data['documents'] = documents_df
-        
-        # Display export data
-        for key, df in export_data.items():
-            st.subheader(f"{key.title()} Data")
-            st.dataframe(df, use_container_width=True)
-            
-            # Convert to CSV for download
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label=f"Download {key.title()} CSV",
-                data=csv,
-                file_name=f"{key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+# Add this to the end of your app.py file
 
-# Main application logic
 def main():
     st.set_page_config(
         page_title="CRM System",
-        page_icon="📊",
-        layout="wide"
+        page_icon="🏢",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
     
-    # Custom CSS for better styling
-    st.markdown("""
-    <style>
-    .stButton > button {
-        width: 100%;
-    }
-    .metric-container {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    # Initialize databases on startup
+    if 'db_initialized' not in st.session_state:
+        with st.spinner("Initializing databases..."):
+            init_auth_database()  # Initialize SQLite auth.db
+            init_database()       # Initialize SQL Server connection
+            st.session_state.db_initialized = True
     
-    if st.session_state.user is None:
+    # Check if user is logged in
+    if 'user' not in st.session_state:
         login_page()
     else:
-        main_dashboard()
+        show_dashboard()
 
-if __name__ == "__main__":
-    main()
-
-# Add these functions to your existing code
-
-def delete_customer(customer_id):
-    """Delete a customer and all related data"""
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
+def show_dashboard():
+    """Main dashboard with sidebar navigation"""
+    st.sidebar.title("Navigation")
     
+    # Navigation menu
+    if st.session_state.user['role'] == 'admin':
+        menu_options = [
+            "Dashboard",
+            "Customer Management", 
+            "Service Management",
+            "Work Progress",
+            "Document Management",
+            "Payment Management",
+            "User Management",
+            "Customer Approvals",
+            "Notifications",
+            "Reports"
+        ]
+    else:
+        menu_options = [
+            "Dashboard",
+            "Customer Management",
+            "Service Management", 
+            "Work Progress",
+            "Document Management",
+            "Payment Management",
+            "Notifications"
+        ]
+
+    # Set default page if not exist
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "Dashboard"
+    
+    # Navigation buttons
+    for page in menu_options:
+        if st.sidebar.button(page, key=f"nav_{page}", use_container_width=True):
+            st.session_state.current_page = page
+            st.rerun()
+    
+    # Get the current page for routing
+    selected_page = st.session_state.current_page
+    
+    # Logout button
+    if st.sidebar.button("Logout"):
+        # Clear session state
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+    
+    # Display notifications count in sidebar
+    if st.session_state.user:
+        unread_count = get_unread_count(st.session_state.user['id'], st.session_state.user['role'])
+        if unread_count > 0:
+            st.sidebar.error(f"📢 {unread_count} unread notifications")
+    
+    # Route to appropriate page
+    if selected_page == "Dashboard":
+        show_dashboard_home()
+    elif selected_page == "Customer Management":
+        show_customers()
+    elif selected_page == "Service Management":
+        show_services()
+    elif selected_page == "Work Progress":
+        show_work_progress()
+    elif selected_page == "Document Management":
+        show_documents()
+    elif selected_page == "Payment Management":
+        show_payments()
+    elif selected_page == "User Management":
+        show_user_management()
+    elif selected_page == "Customer Approvals":
+        show_approvals()
+    elif selected_page == "Notifications":
+        show_notifications()
+    elif selected_page == "Reports":
+        show_reports()
+
+def show_dashboard_home():
+    """Dashboard home page with statistics"""
+    st.title("📊 CRM Dashboard")
+    
+    # Get dashboard statistics
+    stats = get_dashboard_stats()
+    
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    customers_df = get_customers_enhanced(st.session_state.user['id'], st.session_state.user['role'])
+    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
+    
+    with col1:
+        st.metric("My Customers", len(customers_df))
+    with col2:
+        st.metric("Active Services", len(services_df))
+    with col3:
+        pending_count = len(get_pending_customers()) if st.session_state.user['role'] == 'admin' else 0
+        st.metric("Pending Approvals", pending_count)
+    with col4:
+        unread_count = get_unread_count(st.session_state.user['id'], st.session_state.user['role'])
+        st.metric("Unread Notifications", unread_count)
+    
+    # Task statistics
+    if stats['task_stats']:
+        st.subheader("📋 Task Overview")
+        task_df = pd.DataFrame(stats['task_stats'], columns=['Status', 'Count'])
+        st.bar_chart(task_df.set_index('Status'))
+    
+    # Recent activity or overdue tasks
+    if stats['overdue_tasks']:
+        st.subheader("⚠️ Overdue Tasks")
+        overdue_df = pd.DataFrame(stats['overdue_tasks'], 
+                                columns=['Task ID', 'Task Name', 'Status', 'Last Updated'])
+        st.dataframe(overdue_df)
+    
+    # Customer progress
+    if stats['customer_progress']:
+        st.subheader("📈 Customer Progress")
+        progress_df = pd.DataFrame(stats['customer_progress'], 
+                                 columns=['Customer ID', 'Company', 'Total Tasks', 'Completed'])
+        progress_df['Completion %'] = (progress_df['Completed'] / progress_df['Total Tasks'] * 100).round(1)
+        st.dataframe(progress_df)
+
+def get_crm_connection():
+    return get_connection()
+
+def show_services():
+    """Service management page"""
+    st.header("Service Management")
+    
+    # Add new service
+    with st.expander("Add New Service"):
+        with st.form("add_service"):
+            customers_df = get_customers_enhanced(st.session_state.user['id'], st.session_state.user['role'])
+            
+            if len(customers_df) > 0:
+                customer_id = st.selectbox("Customer", 
+                                         options=customers_df['CustomerID'].tolist(),
+                                         format_func=lambda x: f"{x} - {customers_df[customers_df['CustomerID']==x]['CompanyName'].iloc[0]}")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    service_type = st.selectbox("Service Type", 
+                                              ['Consulting', 'Development', 'Support', 'Training', 'Other'])
+                    start_date = st.date_input("Start Date")
+                    package_code = st.text_input("Package Code")
+                
+                with col2:
+                    expected_end_date = st.date_input("Expected End Date")
+                    partner = st.text_input("Partner")
+                
+                description = st.text_area("Service Description")
+                
+                submit_service = st.form_submit_button("Add Service")
+                
+                if submit_service:
+                    service_id = add_service(customer_id, service_type, description, 
+                                           start_date, expected_end_date, package_code, partner)
+                    st.success(f"Service added successfully! ID: {service_id}")
+                    st.rerun()
+            else:
+                st.warning("No customers available. Add customers first.")
+    
+    # Display services
+    st.subheader("Service List")
+    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
+    
+    if len(services_df) > 0:
+        for idx, service in services_df.iterrows():
+            with st.expander(f"{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**Customer:** {service['CompanyName']}")
+                    st.write(f"**Service Type:** {service['ServiceType']}")
+                    st.write(f"**Start Date:** {service['StartDate']}")
+                    st.write(f"**Expected End Date:** {service['ExpectedEndDate']}")
+                
+                with col2:
+                    st.write(f"**Package Code:** {service.get('PackageCode', 'N/A')}")
+                    st.write(f"**Partner:** {service.get('Partner', 'N/A')}")
+                
+                if service.get('Description'):
+                    st.write(f"**Description:** {service['Description']}")
+                
+                # Quick action buttons
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("Add Task", key=f"task_{service['ServiceID']}"):
+                        st.session_state.selected_service_for_task = service['ServiceID']
+                        st.session_state.current_page = "Work Progress"
+                        st.rerun()
+                
+                with col2:
+                    if st.button("Add Payment", key=f"payment_{service['ServiceID']}"):
+                        st.session_state.selected_service_for_payment = service['ServiceID']
+                        st.session_state.current_page = "Payment Management"
+                        st.rerun()
+    else:
+        st.info("No services found. Add your first service above!")
+
+# Add missing utility functions
+def delete_customer(customer_id):
+    """Delete customer and related records"""
     try:
-        # Start transaction
-        cursor.execute('BEGIN TRANSACTION')
+        crm_conn = get_connection()
+        cursor = crm_conn.cursor()
         
-        # Delete in order of dependencies (foreign key constraints)
-        # 1. Delete work_progress related to this customer's services
-        cursor.execute('''
-            DELETE FROM work_progress 
-            WHERE ServiceID IN (
-                SELECT ServiceID FROM services WHERE CustomerID = ?
-            )
-        ''', (customer_id,))
+        # Delete in order: invoices -> services -> customer
+        cursor.execute("DELETE FROM CRM_Invoice WHERE CustomerID = ?", (customer_id,))
+        cursor.execute("DELETE FROM CRM_Services WHERE CustomerID = ?", (customer_id,))
+        cursor.execute("DELETE FROM CRM_Customers WHERE CustomerID = ?", (customer_id,))
         
-        # 2. Delete work_billing related to this customer's services
-        cursor.execute('''
-            DELETE FROM work_billing 
-            WHERE ServiceID IN (
-                SELECT ServiceID FROM services WHERE CustomerID = ?
-            )
-        ''', (customer_id,))
+        crm_conn.commit()
+        crm_conn.close()
         
-        # 3. Delete payments related to this customer's services
-        cursor.execute('''
-            DELETE FROM payments 
-            WHERE ServiceID IN (
-                SELECT ServiceID FROM services WHERE CustomerID = ?
-            )
-        ''', (customer_id,))
+        # Delete from auth.db
+        auth_conn = get_auth_connection()
+        cursor = auth_conn.cursor()
+        cursor.execute("DELETE FROM customer_meta WHERE CustomerID = ?", (customer_id,))
+        cursor.execute("DELETE FROM notifications WHERE related_id = ?", (customer_id,))
+        auth_conn.commit()
+        auth_conn.close()
         
-        # 4. Delete documents related to this customer
-        cursor.execute('DELETE FROM client_documents WHERE CustomerID = ?', (customer_id,))
-        
-        # 5. Delete services related to this customer
-        cursor.execute('DELETE FROM services WHERE CustomerID = ?', (customer_id,))
-        
-        # 6. Delete notifications related to this customer
-        cursor.execute('DELETE FROM notifications WHERE related_id = ?', (customer_id,))
-        
-        # 7. Finally delete the customer
-        cursor.execute('DELETE FROM customers WHERE CustomerID = ?', (customer_id,))
-        
-        # Commit transaction
-        cursor.execute('COMMIT')
-        
-        conn.close()
-        return True, "Customer deleted successfully"
-        
-    except sqlite3.Error as e:
-        cursor.execute('ROLLBACK')
-        conn.close()
+        return True, "Customer deleted successfully!"
+    except Exception as e:
         return False, f"Error deleting customer: {str(e)}"
 
 def delete_user(user_id):
-    """Delete a user and handle reassignment of their data"""
-    conn = sqlite3.connect('crm_database.db')
-    cursor = conn.cursor()
-    
+    """Delete user from auth database"""
     try:
-        # Check if user is the last admin
-        cursor.execute('SELECT COUNT(*) FROM users WHERE role = "admin"')
-        admin_count = cursor.fetchone()[0]
+        auth_conn = get_auth_connection()
+        cursor = auth_conn.cursor()
         
-        cursor.execute('SELECT role FROM users WHERE id = ?', (user_id,))
-        user_role = cursor.fetchone()
+        # Update customer assignments to NULL
+        cursor.execute("UPDATE customer_meta SET assigned_to = NULL WHERE assigned_to = ?", (user_id,))
+        # Delete user notifications
+        cursor.execute("DELETE FROM notifications WHERE user_id = ?", (user_id,))
+        # Delete user
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
         
-        if user_role and user_role[0] == 'admin' and admin_count <= 1:
-            return False, "Cannot delete the last admin user"
+        auth_conn.commit()
+        auth_conn.close()
         
-        # Start transaction
-        cursor.execute('BEGIN TRANSACTION')
-        
-        # Set assigned customers to unassigned (NULL)
-        cursor.execute('UPDATE customers SET assigned_to = NULL WHERE assigned_to = ?', (user_id,))
-        
-        # Set work progress UpdatedBy to NULL where applicable
-        cursor.execute('UPDATE work_progress SET UpdatedBy = NULL WHERE UpdatedBy = ?', (user_id,))
-        
-        # Set document responsible person to NULL
-        cursor.execute('UPDATE client_documents SET ResponsiblePerson = NULL WHERE ResponsiblePerson = ?', (user_id,))
-        
-        # Delete user's notifications
-        cursor.execute('DELETE FROM notifications WHERE user_id = ?', (user_id,))
-        
-        # Finally delete the user
-        cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
-        
-        # Commit transaction
-        cursor.execute('COMMIT')
-        
-        conn.close()
-        return True, "User deleted successfully"
-        
-    except sqlite3.Error as e:
-        cursor.execute('ROLLBACK')
-        conn.close()
+        return True, "User deleted successfully!"
+    except Exception as e:
         return False, f"Error deleting user: {str(e)}"
 
+def send_email(to_email, subject, body):
+    """Send email notification (placeholder - configure with your SMTP settings)"""
+    try:
+        # Configure these with your actual SMTP settings
+        smtp_server = "smtp.gmail.com"  # Replace with your SMTP server
+        smtp_port = 587
+        from_email = "your-email@company.com"  # Replace with your email
+        from_password = "your-app-password"  # Replace with your app password
+        
+        msg = MIMEMultipart()
+        msg['From'] = from_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        msg.attach(MIMEText(body, 'plain'))
+        
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(from_email, from_password)
+        text = msg.as_string()
+        server.sendmail(from_email, to_email, text)
+        server.quit()
+        
+        return True, "Email sent successfully!"
+    except Exception as e:
+        return False, f"Email failed: {str(e)}"
+
+# Run the application
+if __name__ == "__main__":
+    main()
