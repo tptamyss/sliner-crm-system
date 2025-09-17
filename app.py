@@ -6,7 +6,8 @@ import uuid
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from sqlalchemy import create_engine
+import os
+import pyodbc
 import sqlite3
 
 def get_auth_connection():
@@ -83,8 +84,13 @@ def init_auth_database():
 
 def get_connection():
     """Create and return a SQL Server connection."""
-    connection_string = "mssql+pymssql://SlinerOwner:Sliner!19870310@14.224.227.37:1434/SlinerNB"
-    return create_engine(connection_string)
+    return pyodbc.connect(
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        "SERVER=14.224.227.37,1434;"   # <-- change this
+        "DATABASE=SlinerNB;"                # <-- change this
+        "UID=SlinerOwner;"              # <-- SQL Auth user (remove if Windows auth)
+        "PWD=Sliner!19870310;"              # <-- SQL Auth password
+    )
 
 def get_crm_connection():
     """Get connection to CRM database (SQL Server)"""

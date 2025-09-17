@@ -1,9 +1,4 @@
 streamlit
 bcrypt
 pandas
-uuid
-smtplib
-email
-os
-sqlite3
-datetime
+pyodbc
