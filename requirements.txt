@@ -7,4 +7,3 @@ email
 os
 sqlite3
 datetime
-pymssql
