@@ -1,4 +1,10 @@
 streamlit
 bcrypt
 pandas
-mysql.connection
+pyodbc
+uuid
+smtplib
+email
+os
+sqlite3
+datetime
