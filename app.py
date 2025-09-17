@@ -7,7 +7,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
-import pyodbc
+import mysql.connector
 import sqlite3
 
 def get_auth_connection():
@@ -84,7 +84,7 @@ def init_auth_database():
 
 def get_connection():
     """Create and return a SQL Server connection."""
-    return pyodbc.connect(
+    return mysql.connector(
         "DRIVER={ODBC Driver 17 for SQL Server};"
         "SERVER=14.224.227.37,1434;"   # <-- change this
         "DATABASE=SlinerNB;"                # <-- change this
