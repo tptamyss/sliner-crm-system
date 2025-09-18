@@ -9,6 +9,7 @@ from email.mime.multipart import MIMEMultipart
 import os
 import pyodbc
 import sqlite3
+import platform
 
 def get_auth_connection():
     return sqlite3.connect("auth.db")
@@ -82,18 +83,49 @@ def init_auth_database():
     conn.close()
     print("SQLite auth.db initialized ✅")
 
-def get_connection():
-    """Create and return a SQL Server connection."""
-    return pyodbc.connect(
-        "DRIVER={FreeTDS};"
-        "SERVER=14.224.227.37,1434;"
-        "PORT=1434;"   # <-- change this
-        "DATABASE=SlinerNB;"                # <-- change this
-        "UID=SlinerOwner;"              # <-- SQL Auth user (remove if Windows auth)
-        "PWD=Sliner!19870310;"
-        "TDS_Version=8.0;"              # <-- SQL Auth password
-    )
 
+def get_connection():
+    """Create and return a SQL Server connection with fallback options."""
+    
+    # Database credentials
+    server = "14.224.227.37"
+    port = "1434"
+    database = "SlinerNB"
+    username = "SlinerOwner"
+    password = "Sliner!19870310"
+    
+    # Try different connection approaches based on environment
+    connection_attempts = []
+    
+    # For Mac/Windows (local development)
+    if platform.system() in ['Darwin', 'Windows']:
+        connection_attempts = [
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server},{port};DATABASE={database};UID={username};PWD={password}",
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={server},{port};DATABASE={database};UID={username};PWD={password}",
+            f"DRIVER={{SQL Server}};SERVER={server},{port};DATABASE={database};UID={username};PWD={password}"
+        ]
+    
+    # For Linux (Render deployment)
+    else:
+        connection_attempts = [
+            f"DRIVER={{FreeTDS}};SERVER={server};PORT={port};DATABASE={database};UID={username};PWD={password};TDS_Version=8.0",
+            f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server},{port};DATABASE={database};UID={username};PWD={password}",
+            f"SERVER={server},{port};DATABASE={database};UID={username};PWD={password}"
+        ]
+    
+    # Try each connection string
+    for conn_str in connection_attempts:
+        try:
+            print(f"Attempting connection with: {conn_str.split(';')[0]}...")
+            conn = pyodbc.connect(conn_str)
+            print("✅ Connection successful!")
+            return conn
+        except pyodbc.Error as e:
+            print(f"❌ Failed: {e}")
+            continue
+    
+    # If all attempts fail
+    raise Exception(f"Could not connect to database. Tried {len(connection_attempts)} different approaches.")
 def get_crm_connection():
     """Get connection to CRM database (SQL Server)"""
     return get_connection()  # Uses your existing SQL Server connection
@@ -259,74 +291,6 @@ def get_customer_groups():
     df = pd.read_sql_query('SELECT * FROM customer_groups', conn)
     conn.close()
     return df
-
-def add_customer_enhanced(company_name, tax_code, group_id, address, country, customer_category, 
-                         company_type, contact_person1, contact_email1, contact_phone1,
-                         contact_person2, contact_email2, contact_phone2, industry, source,
-                         assigned_to, created_by, auto_approve=False):
-    """
-    Insert customer into SQL Server CRM_Customers table and metadata into SQLite auth.db
-    """
-    print(f"DEBUG: Starting add_customer_enhanced for {company_name}")
-    
-    # 1) Insert into SQL Server CRM_Customers (using correct columns)
-    try:
-        crm_conn = get_connection()
-        crm_cursor = crm_conn.cursor()
-        
-        customer_id = generate_customer_id(country, customer_category)
-        created_date = datetime.now().date()
-        print(f"DEBUG: Generated customer_id: {customer_id}")
-
-        # FIXED: Using actual CRM_Customers columns
-        crm_cursor.execute('''
-            INSERT INTO CRM_Customers (
-                CustomerID, CompanyName, TaxCode, GroupID, Address, Country, CustomerCategory,
-                CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
-                ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            customer_id, company_name, tax_code, group_id, address, country, customer_category,
-            company_type, contact_person1, contact_email1, contact_phone1,
-            contact_person2, contact_email2, contact_phone2, industry, source, created_date
-        ))
-        crm_conn.commit()
-        crm_conn.close()
-        print("DEBUG: Successfully inserted into CRM_Customers")
-        
-    except Exception as e:
-        print(f"ERROR: Failed to insert into CRM_Customers: {e}")
-        return None
-
-    # 2) Insert metadata into SQLite auth.db (this part stays the same)
-    try:
-        auth_conn = get_auth_connection()
-        auth_cursor = auth_conn.cursor()
-
-        approved_flag = 1 if auto_approve else 0
-        print(f"DEBUG: About to insert into customer_meta with approved={approved_flag}")
-        
-        auth_cursor.execute('''
-            INSERT OR REPLACE INTO customer_meta (CustomerID, assigned_to, status, approved, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (customer_id, assigned_to, 'Chưa bắt đầu', approved_flag, created_by))
-        
-        if not auto_approve:
-            notification_id = str(uuid.uuid4())
-            auth_cursor.execute('''
-                INSERT INTO notifications (id, user_id, message, type, related_id, created_at)
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (notification_id, None, f"New customer '{company_name}' needs approval", "customer_approval", customer_id))
-
-        auth_conn.commit()
-        auth_conn.close()
-        print("DEBUG: Successfully committed all auth.db changes")
-        
-        return customer_id
-        
-    except Exception as e:
-        print(f"ERROR: Failed to insert into auth.db: {e}")
-        return None
 
 def get_customers_enhanced(user_id=None, user_role=None):
     """
@@ -998,26 +962,30 @@ def show_customers():
                     assigned_to = None
             
             submit_customer = st.form_submit_button("Add Customer")
-            
-            if submit_customer:
-                if not company_name or not contact_person1:
-                    st.error("Company Name and Primary Contact Person are required!")
-                elif not assigned_to:
-                    st.error("Please assign to an employee!")
-                else:
-                    auto_approve = st.session_state.user['role'] == 'admin'
-                    customer_id = add_customer_enhanced(
-                        company_name, tax_code, group_id, address, country, customer_category[0],
-                        company_type, contact_person1, contact_email1, contact_phone1,
-                        contact_person2, contact_email2, contact_phone2, industry, source,
-                        assigned_to, st.session_state.user['id'], auto_approve
-                    )
-                    
+        
+        # Handle form submission OUTSIDE the form
+        if submit_customer:
+            if not company_name or not contact_person1:
+                st.error("Company Name and Primary Contact Person are required!")
+            elif not assigned_to:
+                st.error("Please assign to an employee!")
+            else:
+                auto_approve = st.session_state.user['role'] == 'admin'
+                customer_id = add_customer_enhanced(
+                    company_name, tax_code, group_id, address, country, customer_category[0],
+                    company_type, contact_person1, contact_email1, contact_phone1,
+                    contact_person2, contact_email2, contact_phone2, industry, source,
+                    assigned_to, st.session_state.user['id'], auto_approve
+                )
+                
+                if customer_id:
                     if auto_approve:
                         st.success(f"Customer added successfully! ID: {customer_id}")
                     else:
                         st.success("Customer submitted for admin approval!")
                     st.rerun()
+                else:
+                    st.error("Failed to add customer. Please try again.")
     
     # Display customers
     st.subheader("Customer List")
@@ -1052,7 +1020,7 @@ def show_customers():
                     st.write(f"**Tax Code:** {customer.get('TaxCode') or 'N/A'}")
                     st.write(f"**Address:** {customer.get('Address') or 'N/A'}")
                     st.write(f"**Country:** {customer.get('Country')}")
-                    st.write(f"**Category:** {customer.get('CustomerCategory')} - {customer.get('CompanyType')}")  # FIXED: use CompanyType
+                    st.write(f"**Category:** {customer.get('CustomerCategory')} - {customer.get('CompanyType')}")
                     st.write(f"**Industry:** {customer.get('Industry') or 'N/A'}")
                     st.write(f"**Source:** {customer.get('Source') or 'N/A'}")
                 
@@ -1094,65 +1062,180 @@ def show_customers():
                 
                 with col2:
                     if can_edit:
+                        edit_key = f"edit_mode_{customer['CustomerID']}"
                         if st.button("Edit", key=f"edit_{customer['CustomerID']}"):
-                            # Simple edit form (you can expand with more fields later)
+                            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+                            st.rerun()
+                
+                # Show edit form directly in the expander if edit mode is active
+                if can_edit and st.session_state.get(f"edit_mode_{customer['CustomerID']}", False):
+                    st.write("---")
+                    st.write("**Edit Customer:**")
+                    
+                    with st.form(key=f"edit_form_{customer['CustomerID']}"):
+                        col_edit1, col_edit2 = st.columns(2)
+                        
+                        with col_edit1:
+                            new_name = st.text_input("Company Name", value=str(customer.get("CompanyName", "")))
+                            new_address = st.text_area("Address", value=str(customer.get("Address", "")))
+                            new_email = st.text_input("Contact Email", value=str(customer.get("ContactEmail1", "")))
+                            new_phone = st.text_input("Contact Phone", value=str(customer.get("ContactPhone1", "")))
+                        
+                        with col_edit2:
+                            new_contact = st.text_input("Contact Person", value=str(customer.get("ContactPerson1", "")))
+                            new_industry = st.text_input("Industry", value=str(customer.get("Industry", "")))
+                            new_tax_code = st.text_input("Tax Code", value=str(customer.get("TaxCode", "")))
+                        
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            save_changes = st.form_submit_button("Save Changes", type="primary")
+                        with col_cancel:
+                            cancel_edit = st.form_submit_button("Cancel")
+                    
+                    # Handle form submission
+                    if save_changes:
+                        try:
+                            crm_conn = get_connection()
+                            cursor = crm_conn.cursor()
+                            
+                            cursor.execute("""
+                                UPDATE CRM_Customers
+                                SET CompanyName = ?, Address = ?, ContactEmail1 = ?, 
+                                    ContactPhone1 = ?, ContactPerson1 = ?, Industry = ?, TaxCode = ?
+                                WHERE CustomerID = ?
+                            """, (new_name, new_address, new_email, new_phone, 
+                                  new_contact, new_industry, new_tax_code, customer["CustomerID"]))
+                            
+                            crm_conn.commit()
+                            crm_conn.close()
+                            
+                            st.success("Customer updated successfully!")
+                            st.session_state[f"edit_mode_{customer['CustomerID']}"] = False
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Error updating customer: {str(e)}")
+                    
+                    if cancel_edit:
+                        st.session_state[f"edit_mode_{customer['CustomerID']}"] = False
+                        st.rerun()
+                        st.rerun()
+                        
+                        # Show edit form immediately if in edit mode
+                        if st.session_state.get(edit_key, False):
+                            st.write("---")
+                            st.write("**Edit Customer:**")
+                            
                             with st.form(key=f"edit_form_{customer['CustomerID']}"):
-                                new_name = st.text_input("Company Name", customer["CompanyName"])
-                                new_address = st.text_input("Address", customer.get("Address", ""))
-                                new_email = st.text_input("Contact Email", customer.get("ContactEmail1", ""))
-                                submitted = st.form_submit_button("Save changes")
+                                col_edit1, col_edit2 = st.columns(2)
                                 
-                                if submitted:
-                                    # FIXED: Update CRM_Customers table
-                                    crm_conn = get_crm_connection()
-                                    cursor = crm_conn.cursor()
-                                    cursor.execute(
-                                        """
-                                        UPDATE CRM_Customers
-                                        SET CompanyName = ?, Address = ?, ContactEmail1 = ?
-                                        WHERE CustomerID = ?
-                                        """,
-                                        (new_name, new_address, new_email, customer["CustomerID"])
-                                    )
-                                    crm_conn.commit()
-                                    crm_conn.close()
-                                    st.success("Customer updated successfully!")
-                                    st.rerun()  # FIXED: use st.rerun() instead of st.experimental_rerun()
-
+                                with col_edit1:
+                                    new_name = st.text_input()
                 
                 with col3:
                     # Delete button (admin only)
                     if st.session_state.user['role'] == 'admin':
                         if st.button("Delete", key=f"delete_{customer['CustomerID']}", type="secondary"):
-                            # Confirmation dialog using session state
                             st.session_state[f"confirm_delete_{customer['CustomerID']}"] = True
-                        
-                        # Show confirmation if delete was clicked
-                        if st.session_state.get(f"confirm_delete_{customer['CustomerID']}", False):
-                            st.warning(f"Are you sure you want to delete {customer['CompanyName']}? This will also delete all related services and invoices.")
-                            
-                            col_yes, col_no = st.columns(2)
-                            with col_yes:
-                                if st.button("Yes, Delete", key=f"confirm_yes_{customer['CustomerID']}", type="primary"):
-                                    success, message = delete_customer(customer['CustomerID'])
-                                    if success:
-                                        st.success(message)
-                                        # Clear confirmation state
-                                        if f"confirm_delete_{customer['CustomerID']}" in st.session_state:
-                                            del st.session_state[f"confirm_delete_{customer['CustomerID']}"]
-                                        st.rerun()
-                                    else:
-                                        st.error(message)
-                            
-                            with col_no:
-                                if st.button("Cancel", key=f"confirm_no_{customer['CustomerID']}"):
-                                    # Clear confirmation state
-                                    if f"confirm_delete_{customer['CustomerID']}" in st.session_state:
-                                        del st.session_state[f"confirm_delete_{customer['CustomerID']}"]
-                                    st.rerun()
+        
+        # Handle delete confirmations
+        for idx, customer in filtered_df.iterrows():
+            if st.session_state.get(f"confirm_delete_{customer['CustomerID']}", False):
+                st.warning(f"⚠️ Delete {customer['CompanyName']}?")
+                st.write("This will also delete all related services and invoices.")
+                
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("Yes, Delete", key=f"confirm_yes_{customer['CustomerID']}", type="primary"):
+                        success, message = delete_customer(customer['CustomerID'])
+                        if success:
+                            st.success(message)
+                        else:
+                            st.error(message)
+                        # Clear confirmation state
+                        if f"confirm_delete_{customer['CustomerID']}" in st.session_state:
+                            del st.session_state[f"confirm_delete_{customer['CustomerID']}"]
+                        st.rerun()
+                
+                with col_no:
+                    if st.button("Cancel", key=f"confirm_no_{customer['CustomerID']}"):
+                        # Clear confirmation state
+                        if f"confirm_delete_{customer['CustomerID']}" in st.session_state:
+                            del st.session_state[f"confirm_delete_{customer['CustomerID']}"]
+                        st.rerun()
+    
     else:
         st.info("No customers found. Add your first customer above!")
 
+
+# Fixed add_customer_enhanced function
+def add_customer_enhanced(company_name, tax_code, group_id, address, country, customer_category, 
+                         company_type, contact_person1, contact_email1, contact_phone1,
+                         contact_person2, contact_email2, contact_phone2, industry, source,
+                         assigned_to, created_by, auto_approve=False):
+    """
+    Insert customer into SQL Server CRM_Customers table and metadata into SQLite auth.db
+    """
+    print(f"DEBUG: Starting add_customer_enhanced for {company_name}")
+    
+    # 1) Insert into SQL Server CRM_Customers (using correct columns)
+    try:
+        crm_conn = get_connection()  # Use consistent connection function
+        crm_cursor = crm_conn.cursor()
+        
+        customer_id = generate_customer_id(country, customer_category)
+        created_date = datetime.now().date()
+        print(f"DEBUG: Generated customer_id: {customer_id}")
+
+        # FIXED: Using actual CRM_Customers columns
+        crm_cursor.execute('''
+            INSERT INTO CRM_Customers (
+                CustomerID, CompanyName, TaxCode, GroupID, Address, Country, CustomerCategory,
+                CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
+                ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            customer_id, company_name, tax_code, group_id, address, country, customer_category,
+            company_type, contact_person1, contact_email1, contact_phone1,
+            contact_person2, contact_email2, contact_phone2, industry, source, created_date
+        ))
+        crm_conn.commit()
+        crm_conn.close()
+        print("DEBUG: Successfully inserted into CRM_Customers")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to insert into CRM_Customers: {e}")
+        return None
+
+    # 2) Insert metadata into SQLite auth.db (this part stays the same)
+    try:
+        auth_conn = get_auth_connection()
+        auth_cursor = auth_conn.cursor()
+
+        approved_flag = 1 if auto_approve else 0
+        print(f"DEBUG: About to insert into customer_meta with approved={approved_flag}")
+        
+        auth_cursor.execute('''
+            INSERT OR REPLACE INTO customer_meta (CustomerID, assigned_to, status, approved, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (customer_id, assigned_to, 'Chưa bắt đầu', approved_flag, created_by))
+        
+        if not auto_approve:
+            notification_id = str(uuid.uuid4())
+            auth_cursor.execute('''
+                INSERT INTO notifications (id, user_id, message, type, related_id, created_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (notification_id, None, f"New customer '{company_name}' needs approval", "customer_approval", customer_id))
+
+        auth_conn.commit()
+        auth_conn.close()
+        print("DEBUG: Successfully committed all auth.db changes")
+        
+        return customer_id
+        
+    except Exception as e:
+        print(f"ERROR: Failed to insert into auth.db: {e}")
+        return None
 # --------------------------
 # Modified show_user_management function
 # --------------------------
