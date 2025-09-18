@@ -914,9 +914,6 @@ def get_dashboard_stats():
             'overdue_tasks': []
         }
 
-# --------------------------
-# Login page (no DB change required; kept for completeness)
-# --------------------------
 def login_page():
     st.title("CRM System - Login")
     
@@ -924,16 +921,20 @@ def login_page():
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
         submit_button = st.form_submit_button("Login")
-        
-        if submit_button:
-            user = authenticate_user(email, password)
-            if user:
-                st.session_state.user = user
-                st.session_state.page = 'dashboard'
-                st.rerun()
-            else:
-                st.error("Invalid email or password")
-
+    
+    if submit_button:
+        if email and password:  # Basic validation
+            with st.spinner("Logging in..."):
+                user = authenticate_user(email, password)
+                if user:
+                    st.session_state.user = user
+                    st.session_state.page = 'dashboard'
+                    st.success("Login successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password")
+        else:
+            st.warning("Please enter both email and password")
 
 # --------------------------
 # show_customers (fixed edit / update to use SQL Server)
