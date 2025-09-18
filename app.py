@@ -29,17 +29,6 @@ def init_auth_database():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-
-    # Customer Groups
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS customer_groups (
-            GroupID TEXT PRIMARY KEY,
-            GroupName TEXT NOT NULL,
-            Description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS customer_meta (
@@ -131,12 +120,6 @@ def get_crm_connection():
     return get_connection()  # Uses your existing SQL Server connection
 
 def init_database():
-    """
-    Initialize database connection.
-    Unlike SQLite, we don't create tables here — 
-    assume schema already exists in SQL Server.
-    Just ensure defaults (admin user, groups, etc.).
-    """
     max_retries = 2
     
     for attempt in range(max_retries):
@@ -158,23 +141,6 @@ def init_database():
                     VALUES (?, ?, ?, ?, ?)
                 ''', (admin_id, "admin@company.com", hashed_password.decode('utf-8'), "admin", "Admin User"))
                 print("Default admin user created (email: admin@company.com / password: admin123)")
-
-            # ---- Ensure default customer groups exist ----
-            cursor.execute("SELECT COUNT(*) FROM Customer_Groups")
-            group_count = cursor.fetchone()[0]
-
-            if group_count == 0:
-                sample_groups = [
-                    ('GRP001', 'VIP Customers', 'High priority customers'),
-                    ('GRP002', 'Regular Customers', 'Standard customers'),
-                    ('GRP003', 'New Leads', 'Potential customers')
-                ]
-                cursor.executemany('''
-                    INSERT INTO Customer_Groups (GroupID, GroupName, Description)
-                    VALUES (?, ?, ?)
-                ''', sample_groups)
-                print("Default customer groups inserted")
-
             conn.commit()
             conn.close()
             print("Database initialized successfully!")
@@ -285,10 +251,9 @@ def add_user(email, password, role, name):
         print(f"Error adding user: {e}")
         return False
 
-# ---------- Customer groups (SQLite auth.db) ----------
 def get_customer_groups():
-    conn = get_auth_connection()
-    df = pd.read_sql_query('SELECT * FROM customer_groups', conn)
+    conn = get_connection()  # Use SQL Server connection, not auth
+    df = pd.read_sql_query('SELECT DISTINCT [Group] FROM CRM_Customers ORDER BY [Group]', conn)
     conn.close()
     return df
 
@@ -318,10 +283,6 @@ def get_customers_enhanced(user_id=None, user_role=None):
         users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
     except Exception:
         users_df = pd.DataFrame(columns=['id','name'])
-    try:
-        groups_df = pd.read_sql_query('SELECT GroupID, GroupName FROM customer_groups', auth_conn)
-    except Exception:
-        groups_df = pd.DataFrame(columns=['GroupID','GroupName'])
     auth_conn.close()
 
     # Merge dataframes
@@ -333,12 +294,6 @@ def get_customers_enhanced(user_id=None, user_role=None):
         df = df.merge(users_df, on='assigned_to', how='left')
     else:
         df['assigned_name'] = None
-
-    # Map GroupID -> GroupName
-    if not groups_df.empty:
-        df = df.merge(groups_df, on='GroupID', how='left')
-    else:
-        df['GroupName'] = None
 
     # Normalize approved/status defaults
     df['approved'] = df['approved'].fillna(0).astype(int)
@@ -400,10 +355,6 @@ def get_pending_customers():
         users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
     except Exception:
         users_df = pd.DataFrame(columns=['id','name'])
-    try:
-        groups_df = pd.read_sql_query('SELECT GroupID, GroupName FROM customer_groups', auth_conn)
-    except Exception:
-        groups_df = pd.DataFrame(columns=['GroupID','GroupName'])
     auth_conn.close()
 
     if crm_df.empty:
@@ -415,11 +366,6 @@ def get_pending_customers():
         df = df.merge(users_df, on='assigned_to', how='left')
     else:
         df['assigned_name'] = None
-    if not groups_df.empty:
-        df = df.merge(groups_df, on='GroupID', how='left')
-    else:
-        df['GroupName'] = None
-
     df['approved'] = df['approved'].fillna(0).astype(int)
     pending = df[df['approved'] == 0].reset_index(drop=True)
     return pending
@@ -915,14 +861,14 @@ def show_customers():
                 company_name = st.text_input("Company Name*")
                 tax_code = st.text_input("Tax Code")
                 
-                # Get customer groups (from auth.db)
+                # Get customer groups (from SQL Server CRM_Customers table)
                 groups_df = get_customer_groups()
                 if len(groups_df) > 0:
-                    group_id = st.selectbox("Customer Group", 
-                                          options=[''] + groups_df['GroupID'].tolist(),
-                                          format_func=lambda x: groups_df[groups_df['GroupID']==x]['GroupName'].iloc[0] if x else "Select Group")
+                    group_name = st.selectbox("Customer Group", 
+                        options=[''] + groups_df['Group'].tolist(),
+                        format_func=lambda x: x if x else "Select Group")
                 else:
-                    group_id = st.text_input("Group ID")
+                    group_name = st.text_input("Group Name")
                 
                 address = st.text_area("Address")
                 
@@ -1190,7 +1136,7 @@ def add_customer_enhanced(company_name, tax_code, group_id, address, country, cu
         # FIXED: Using actual CRM_Customers columns
         crm_cursor.execute('''
             INSERT INTO CRM_Customers (
-                CustomerID, CompanyName, TaxCode, GroupID, Address, Country, CustomerCategory,
+                CustomerID, CompanyName, TaxCode, Group, Address, Country, CustomerCategory,
                 CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
                 ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1503,7 +1449,7 @@ def show_payments():
                     if original_amount <= 0:
                         st.error("Original Amount must be greater than 0!")
                     else:
-                        payment_id = add_payment(service_id, currency, original_amount, 
+                        payment_id = add_invoice(service_id, currency, original_amount, 
                                                exchange_rate, deposit_amount, notes)
                         st.success(f"Payment record added successfully! ID: {payment_id}")
                         st.rerun()
@@ -1517,7 +1463,7 @@ def show_payments():
     
     if len(services_df) > 0:
         for _, service in services_df.iterrows():
-            payments_df = get_payments_by_service(service['ServiceID'])
+            payments_df = get_invoices_by_service(service['ServiceID'])
             
             if len(payments_df) > 0:
                 st.write(f"**{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})**")
@@ -1971,7 +1917,7 @@ def show_services():
                 
                 with col1:
                     service_type = st.selectbox("Service Type", 
-                                              ['Consulting', 'Development', 'Support', 'Training', 'Other'])
+                                                options=pd.read_sql_query('SELECT DISTINCT ServiceType FROM CRM_ServiceCatalog ORDER BY ServiceType', get_connection())['ServiceType'].tolist())
                     start_date = st.date_input("Start Date")
                     package_code = st.text_input("Package Code")
                 
