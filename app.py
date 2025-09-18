@@ -85,11 +85,13 @@ def init_auth_database():
 def get_connection():
     """Create and return a SQL Server connection."""
     return pyodbc.connect(
-        "DRIVER={ODBC Driver 17 for SQL Server};"
-        "SERVER=14.224.227.37,1434;"   # <-- change this
+        "DRIVER={FreeTDS};"
+        "SERVER=14.224.227.37,1434;"
+        "PORT=1434;"   # <-- change this
         "DATABASE=SlinerNB;"                # <-- change this
         "UID=SlinerOwner;"              # <-- SQL Auth user (remove if Windows auth)
-        "PWD=Sliner!19870310;"              # <-- SQL Auth password
+        "PWD=Sliner!19870310;"
+        "TDS_Version=8.0;"              # <-- SQL Auth password
     )
 
 def get_crm_connection():
