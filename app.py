@@ -615,7 +615,7 @@ def get_invoices_by_service(service_id):
     crm_conn.close()
     return df
 
-def update_payment(payment_id, first_amount=None, first_date=None, second_amount=None, second_date=None):
+def update_payment(invoice_id, first_amount=None, first_date=None, second_amount=None, second_date=None):
     crm_conn = get_crm_connection()
     cursor = crm_conn.cursor()
     
@@ -636,7 +636,7 @@ def update_payment(payment_id, first_amount=None, first_date=None, second_amount
         values.append(second_date)
     
     if updates:
-        values.append(payment_id)
+        values.append(invoice_id)
         sql = f'UPDATE Payments SET {", ".join(updates)} WHERE PaymentID = ?'
         cursor.execute(sql, values)
         crm_conn.commit()
@@ -1449,9 +1449,9 @@ def show_payments():
                     if original_amount <= 0:
                         st.error("Original Amount must be greater than 0!")
                     else:
-                        payment_id = add_invoice(service_id, currency, original_amount, 
+                        invoice_id = add_invoice(service_id, currency, original_amount, 
                                                exchange_rate, deposit_amount, notes)
-                        st.success(f"Payment record added successfully! ID: {payment_id}")
+                        st.success(f"Payment record added successfully! ID: {invoice_id}")
                         st.rerun()
             else:
                 st.warning("No services available. Add services first.")
@@ -1469,7 +1469,7 @@ def show_payments():
                 st.write(f"**{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})**")
                 
                 for _, payment in payments_df.iterrows():
-                    with st.expander(f"Payment {payment['PaymentID']} - {payment['Currency']} {payment['OriginalAmount']:,.2f}"):
+                    with st.expander(f"Payment {payment['InvoiceID']} - {payment['Currency']} {payment['OriginalAmount']:,.2f}"):
                         col1, col2 = st.columns(2)
                         
                         with col1:
@@ -1492,7 +1492,7 @@ def show_payments():
                             st.write(f"**Notes:** {payment['Notes']}")
                         
                         # Payment update form
-                        with st.form(f"update_payment_{payment['PaymentID']}"):
+                        with st.form(f"update_payment_{payment['InvoiceID']}"):
                             col1, col2 = st.columns(2)
                             
                             with col1:
@@ -1500,23 +1500,23 @@ def show_payments():
                                                                min_value=0.0, 
                                                                value=float(payment['FirstPaymentAmount'] or 0),
                                                                format="%.2f",
-                                                               key=f"first_{payment['PaymentID']}")
+                                                               key=f"first_{payment['InvoiceID']}")
                                 first_date = st.date_input("First Payment Date", 
                                                          value=pd.to_datetime(payment['FirstPaymentDate']).date() if payment['FirstPaymentDate'] else None,
-                                                         key=f"first_date_{payment['PaymentID']}")
+                                                         key=f"first_date_{payment['InvoiceID']}")
                             
                             with col2:
                                 second_payment = st.number_input("Second Payment Amount", 
                                                                 min_value=0.0, 
                                                                 value=float(payment['SecondPaymentAmount'] or 0),
                                                                 format="%.2f",
-                                                                key=f"second_{payment['PaymentID']}")
+                                                                key=f"second_{payment['InvoiceID']}")
                                 second_date = st.date_input("Second Payment Date", 
                                                           value=pd.to_datetime(payment['SecondPaymentDate']).date() if payment['SecondPaymentDate'] else None,
-                                                          key=f"second_date_{payment['PaymentID']}")
+                                                          key=f"second_date_{payment['InvoiceID']}")
                             
                             if st.form_submit_button("Update Payment"):
-                                update_payment(payment['PaymentID'], first_payment, first_date, 
+                                update_payment(payment['InvoiceID'], first_payment, first_date, 
                                              second_payment, second_date)
                                 st.success("Payment updated successfully!")
                                 st.rerun()
