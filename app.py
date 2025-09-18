@@ -1852,7 +1852,7 @@ def show_dashboard():
         show_reports()
 
 def show_dashboard_home():
-    """Dashboard home page with statistics"""
+    conn = get_connection()
     st.title("📊 CRM Dashboard")
     
     # Get dashboard statistics
@@ -1865,7 +1865,8 @@ def show_dashboard_home():
     services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
     
     with col1:
-        st.metric("My Customers", len(customers_df))
+        count_df = pd.read_sql_query('SELECT COUNT(DISTINCT [Group]) as group_count FROM CRM_Customers WHERE [Group] IS NOT NULL', conn)
+        st.metric("Customer", len(count_df))
     with col2:
         st.metric("Active Services", len(services_df))
     with col3:
@@ -1895,9 +1896,6 @@ def show_dashboard_home():
                                  columns=['Customer ID', 'Company', 'Total Tasks', 'Completed'])
         progress_df['Completion %'] = (progress_df['Completed'] / progress_df['Total Tasks'] * 100).round(1)
         st.dataframe(progress_df)
-
-def get_crm_connection():
-    return get_connection()
 
 def show_services():
     """Service management page"""
