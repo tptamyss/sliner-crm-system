@@ -918,7 +918,7 @@ def show_customers():
             else:
                 auto_approve = st.session_state.user['role'] == 'admin'
                 customer_id = add_customer_enhanced(
-                    company_name, tax_code, group_id, address, country, customer_category[0],
+                    company_name, tax_code, group_name, address, country, customer_category[0],
                     company_type, contact_person1, contact_email1, contact_phone1,
                     contact_person2, contact_email2, contact_phone2, industry, source,
                     assigned_to, st.session_state.user['id'], auto_approve
@@ -959,7 +959,7 @@ def show_customers():
         
         # Display customers
         for idx, customer in filtered_df.iterrows():
-            with st.expander(f"{customer['CustomerID']} - {customer['CompanyName']}"):
+            with st.expander(f"{customer['CompanyName']}"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -979,7 +979,7 @@ def show_customers():
                         st.write(f"**Secondary Email:** {customer.get('ContactEmail2') or 'N/A'}")
                         st.write(f"**Secondary Phone:** {customer.get('ContactPhone2') or 'N/A'}")
                     st.write(f"**Assigned to:** {customer.get('assigned_name')}")
-                    st.write(f"**Group:** {customer.get('GroupName') or 'N/A'}")
+                    st.write(f"**Group:** {customer.get('Group') or 'N/A'}")
                 
                 # Action buttons
                 col1, col2, col3 = st.columns(3)
@@ -1141,7 +1141,7 @@ def add_customer_enhanced(company_name, tax_code, group_id, address, country, cu
                 ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            customer_id, company_name, tax_code, group_id, address, country, customer_category,
+            customer_id, company_name, tax_code, group_name, address, country, customer_category,
             company_type, contact_person1, contact_email1, contact_phone1,
             contact_person2, contact_email2, contact_phone2, industry, source, created_date
         ))
@@ -1367,7 +1367,7 @@ def show_work_progress():
             filtered_df = work_df
         
         for idx, task in filtered_df.iterrows():
-            with st.expander(f"{task['TaskID']} - {task['TaskName']} ({task['CompanyName']})"):
+            with st.expander(f"{task['TaskName']} ({task['CompanyName']})"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -1429,8 +1429,7 @@ def show_payments():
             if len(services_df) > 0:
                 service_id = st.selectbox("Service", 
                                         options=services_df['ServiceID'].tolist(),
-                                        format_func=lambda x: f"{x} - {services_df[services_df['ServiceID']==x]['ServiceType'].iloc[0]} ({services_df[services_df['ServiceID']==x]['CompanyName'].iloc[0]})")
-                
+                                        format_func=lambda x: f"{services_df[services_df['ServiceID']==x]['ServiceType'].iloc[0]} ({services_df[services_df['ServiceID']==x]['CompanyName'].iloc[0]})")
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -1510,7 +1509,7 @@ def show_payments():
         
         if len(payments_df) > 0:
             for _, payment in payments_df.iterrows():
-                with st.expander(f"Payment {payment['PaymentID']} - {payment['Currency']} {payment['PaidAmount']:,.2f} ({payment['PaymentDate']})"):
+                with st.expander(f"{payment['Currency']} ({payment['PaymentDate']})"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -1601,7 +1600,7 @@ def show_documents():
             filtered_df = documents_df
         
         for idx, doc in filtered_df.iterrows():
-            with st.expander(f"{doc['DocumentID']} - {doc['DocumentName']} ({doc['CompanyName']})"):
+            with st.expander(f"{doc['DocumentName']} ({doc['CompanyName']})"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
@@ -1948,7 +1947,7 @@ def show_services():
     
     if len(services_df) > 0:
         for idx, service in services_df.iterrows():
-            with st.expander(f"{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})"):
+            with st.expander(f"{service['ServiceType']} ({service['CompanyName']})"):
                 col1, col2 = st.columns(2)
                 
                 with col1:
