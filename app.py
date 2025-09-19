@@ -585,7 +585,7 @@ def update_task_status(task_id, new_status, progress, updated_by, notes=""):
 
 # ---------- Invoice (SQL Server) ----------
 def add_invoice(service_id, customer_id, amount_original, currency, due_date, notes=""):
-    """Add invoice to CRM_Invoice table"""
+    """Add invoice to CRM_Payments table"""
     crm_conn = get_connection()
     cursor = crm_conn.cursor()
     
@@ -597,7 +597,7 @@ def add_invoice(service_id, customer_id, amount_original, currency, due_date, no
     amount_usd = amount_original  # Placeholder - implement currency conversion
     
     cursor.execute('''
-        INSERT INTO CRM_Invoice (InvoiceCode, InvoiceID, ServiceID, CustomerID, InvoiceDate, DueDate, AmountOriginal, AmountUSD, Status, Note, OutstandingUSD)
+        INSERT INTO CRM_Payments (InvoiceCode, InvoiceID, ServiceID, CustomerID, InvoiceDate, DueDate, AmountOriginal, AmountUSD, Status, Note, OutstandingUSD)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (invoice_code, invoice_id, service_id, customer_id, invoice_date, due_date, amount_original, amount_usd, 'Pending', notes, amount_usd))
     
@@ -609,7 +609,7 @@ def get_invoices_by_service(service_id):
     """Get invoices for a specific service"""
     crm_conn = get_connection()
     try:
-        df = pd.read_sql_query('SELECT * FROM CRM_Invoice WHERE ServiceID = ?', crm_conn, params=(service_id,))
+        df = pd.read_sql_query('SELECT * FROM CRM_Payments WHERE ServiceID = ?', crm_conn, params=(service_id,))
     except Exception:
         df = pd.DataFrame()
     crm_conn.close()
@@ -797,7 +797,7 @@ def get_dashboard_stats():
         # Get basic counts
         customer_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Customers", crm_conn)['count'].iloc[0]
         service_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Services", crm_conn)['count'].iloc[0]
-        invoice_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Invoice", crm_conn)['count'].iloc[0]
+        invoice_count = pd.read_sql_query("SELECT COUNT(*) as count FROM CRM_Payments", crm_conn)['count'].iloc[0]
         
         # Service status distribution
         service_status = pd.read_sql_query("SELECT Status, COUNT(*) as count FROM CRM_Services GROUP BY Status", crm_conn)
@@ -1434,97 +1434,104 @@ def show_payments():
                 col1, col2 = st.columns(2)
                 
                 with col1:
+                    payment_date = st.date_input("Payment Date")
+                    type_of_payment = st.text_input("Type of Payment")
                     currency = st.selectbox("Currency", ['VND', 'USD', 'EUR', 'SGD', 'HKD', 'JPY'])
-                    original_amount = st.number_input("Original Amount", min_value=0.0, format="%.2f")
+                    paid_amount = st.number_input("Paid Amount", min_value=0.0, format="%.2f")
                 
                 with col2:
-                    exchange_rate = st.number_input("Exchange Rate (if applicable)", min_value=0.0, value=1.0, format="%.4f")
-                    deposit_amount = st.number_input("Deposit Amount", min_value=0.0, format="%.2f")
+                    exrate = st.number_input("Exchange Rate", min_value=0.0, value=1.0, format="%.4f")
+                    payer_name = st.text_input("Payer Name")
+                    received_account = st.text_input("Received Account")
+                    conn = get_connection()
+                    invoice_df = pd.read_sql_query('SELECT DISTINCT InvoiceID FROM CRM_Payments ORDER BY InvoiceID', conn)
+                    conn.close()
+                    invoice_id = st.selectbox("Select Invoice ID", 
+                        options=[''] + invoice_df['InvoiceID'].tolist(),
+                        format_func=lambda x: x if x else "Select Invoice ID")
                 
                 notes = st.text_area("Payment Notes")
                 
                 submit_payment = st.form_submit_button("Add Payment")
                 
                 if submit_payment:
-                    if original_amount <= 0:
-                        st.error("Original Amount must be greater than 0!")
+                    if not invoice_id:
+                        st.error("Invoice ID is required!")
+                    elif paid_amount <= 0:
+                        st.error("Paid Amount must be greater than 0!")
+                    elif not payer_name.strip():
+                        st.error("Payer Name is required!")
                     else:
-                        invoice_id = add_invoice(service_id, currency, original_amount, 
-                                               exchange_rate, deposit_amount, notes)
-                        st.success(f"Payment record added successfully! ID: {invoice_id}")
-                        st.rerun()
-            else:
-                st.warning("No services available. Add services first.")
+                        try:
+                            # Add payment to database
+                            conn = get_connection()
+                            cursor = conn.cursor()
+
+                            insert_query = """
+                            INSERT INTO CRM_Payments
+                            (PaymentDate, TypeOfPayment, PaidAmount, Currency, Exrate, PayerName,
+                            ReceivedAccount, Notes, InvoiceID, PaidAmountUSD)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """
+                            paid_amount_usd = paid_amount / exrate if currency != 'USD' else paid_amount
+                            cursor.execute(insert_query, (payment_date,
+                                                          type_of_payment,
+                                                          paid_amount,
+                                                          currency,
+                                                          exrate,
+                                                          payer_name,
+                                                          received_account,
+                                                          notes,
+                                                          invoice_id,
+                                                          paid_amount_usd
+                            ))
+
+                            conn.commit()
+                            conn.close()
+
+                            st.success(f"Payment record added successfully! ID: {invoice_id}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error adding payment: {e}")
+    
     
     # Display payments
     st.subheader("Payment List")
     
-    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
-    
-    if len(services_df) > 0:
-        for _, service in services_df.iterrows():
-            payments_df = get_invoices_by_service(service['ServiceID'])
+    try:
+        conn = get_connection()
+        payments_df = pd.read_sql_query("""
+            SELECT PaymentID, PaymentDate, TypeOfPayment, PaidAmount, Currency, 
+                   Exrate, PayerName, ReceivedAccount, Notes, InvoiceID, PaidAmountUSD
+            FROM CRM_Payments 
+            ORDER BY PaymentDate DESC, PaymentID DESC
+        """, conn)
+        conn.close()
+        
+        if len(payments_df) > 0:
+            for _, payment in payments_df.iterrows():
+                with st.expander(f"Payment {payment['PaymentID']} - {payment['Currency']} {payment['PaidAmount']:,.2f} ({payment['PaymentDate']})"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Payment Date:** {payment['PaymentDate']}")
+                        st.write(f"**Type of Payment:** {payment['TypeOfPayment']}")
+                        st.write(f"**Paid Amount:** {payment['Currency']} {payment['PaidAmount']:,.2f}")
+                        st.write(f"**Exchange Rate:** {payment['Exrate']}")
+                        st.write(f"**Paid Amount USD:** ${payment['PaidAmountUSD']:,.2f}")
+                    
+                    with col2:
+                        st.write(f"**Payer Name:** {payment['PayerName']}")
+                        st.write(f"**Received Account:** {payment['ReceivedAccount']}")
+                        st.write(f"**Invoice ID:** {payment['InvoiceID']}")
+                    
+                    if payment['Notes']:
+                        st.write(f"**Notes:** {payment['Notes']}")
+        else:
+            st.info("No payments found.")
             
-            if len(payments_df) > 0:
-                st.write(f"**{service['ServiceID']} - {service['ServiceType']} ({service['CompanyName']})**")
-                
-                for _, payment in payments_df.iterrows():
-                    with st.expander(f"Payment {payment['InvoiceID']} - {payment['Currency']} {payment['OriginalAmount']:,.2f}"):
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.write(f"**Currency:** {payment['Currency']}")
-                            st.write(f"**Original Amount:** {payment['OriginalAmount']:,.2f}")
-                            st.write(f"**Exchange Rate:** {payment['ExchangeRate']}")
-                            st.write(f"**Converted Amount:** {payment['ConvertedAmount']:,.2f}")
-                        
-                        with col2:
-                            total_paid = (payment['DepositAmount'] or 0) + (payment['FirstPaymentAmount'] or 0) + (payment['SecondPaymentAmount'] or 0)
-                            payment_status = 'Đầy đủ' if total_paid >= payment['ConvertedAmount'] else 'Chưa đủ'
-                            
-                            st.write(f"**Deposit:** {payment['DepositAmount'] or 0:,.2f}")
-                            st.write(f"**First Payment:** {payment['FirstPaymentAmount'] or 0:,.2f}")
-                            st.write(f"**Second Payment:** {payment['SecondPaymentAmount'] or 0:,.2f}")
-                            st.write(f"**Total Paid:** {total_paid:,.2f}")
-                            st.write(f"**Status:** {payment_status}")
-                        
-                        if payment['Notes']:
-                            st.write(f"**Notes:** {payment['Notes']}")
-                        
-                        # Payment update form
-                        with st.form(f"update_payment_{payment['InvoiceID']}"):
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                first_payment = st.number_input("First Payment Amount", 
-                                                               min_value=0.0, 
-                                                               value=float(payment['FirstPaymentAmount'] or 0),
-                                                               format="%.2f",
-                                                               key=f"first_{payment['InvoiceID']}")
-                                first_date = st.date_input("First Payment Date", 
-                                                         value=pd.to_datetime(payment['FirstPaymentDate']).date() if payment['FirstPaymentDate'] else None,
-                                                         key=f"first_date_{payment['InvoiceID']}")
-                            
-                            with col2:
-                                second_payment = st.number_input("Second Payment Amount", 
-                                                                min_value=0.0, 
-                                                                value=float(payment['SecondPaymentAmount'] or 0),
-                                                                format="%.2f",
-                                                                key=f"second_{payment['InvoiceID']}")
-                                second_date = st.date_input("Second Payment Date", 
-                                                          value=pd.to_datetime(payment['SecondPaymentDate']).date() if payment['SecondPaymentDate'] else None,
-                                                          key=f"second_date_{payment['InvoiceID']}")
-                            
-                            if st.form_submit_button("Update Payment"):
-                                update_payment(payment['InvoiceID'], first_payment, first_date, 
-                                             second_payment, second_date)
-                                st.success("Payment updated successfully!")
-                                st.rerun()
-                
-                st.divider()
-    else:
-        st.info("No services with payments found.")
-
+    except Exception as e:
+        st.error(f"Error loading payments: {e}")
 def show_documents():
     st.header("Document Management")
     
@@ -1981,7 +1988,7 @@ def delete_customer(customer_id):
         cursor = crm_conn.cursor()
         
         # Delete in order: invoices -> services -> customer
-        cursor.execute("DELETE FROM CRM_Invoice WHERE CustomerID = ?", (customer_id,))
+        cursor.execute("DELETE FROM CRM_Payments WHERE CustomerID = ?", (customer_id,))
         cursor.execute("DELETE FROM CRM_Services WHERE CustomerID = ?", (customer_id,))
         cursor.execute("DELETE FROM CRM_Customers WHERE CustomerID = ?", (customer_id,))
         
