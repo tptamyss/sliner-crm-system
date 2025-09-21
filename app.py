@@ -214,8 +214,8 @@ def generate_customer_id(country, category):
 
 # ---------- Users (SQLite auth.db) ----------
 def get_all_users():
-    conn = get_auth_connection()
-    df = pd.read_sql_query('SELECT id, name, email, role FROM users', conn)
+    conn = get_connection()  # Use SQL Server connection
+    df = pd.read_sql_query('SELECT UserID, Name, Email, Role FROM CRM_Users', conn)
     conn.close()
     return df
 
@@ -259,39 +259,41 @@ def get_customer_groups():
 
 def get_customers_enhanced(user_id=None, user_role=None):
     """
-    Fetch customers from CRM_Customers and enrich with auth data
+    Fetch customers from CRM_Customers and enrich with CRM_Users data
     """
-    # Get customers from SQL Server (using correct table name)
+    # Get customers from SQL Server
     crm_conn = get_connection()
     try:
         crm_df = pd.read_sql_query('SELECT * FROM CRM_Customers', crm_conn)
+        
+        # Get users from SQL Server CRM_Users table
+        users_df = pd.read_sql_query('SELECT UserID, Name FROM CRM_Users', crm_conn)
+        
     except Exception as e:
         print(f"Error fetching customers: {e}")
         crm_df = pd.DataFrame()
+        users_df = pd.DataFrame(columns=['UserID','Name'])
     crm_conn.close()
 
     if crm_df.empty:
         return crm_df
 
-    # Get meta from SQLite auth.db
+    # Get meta from SQLite auth.db (still needed for approval status)
     auth_conn = get_auth_connection()
     try:
         meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
     except Exception:
         meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
-    try:
-        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
-    except Exception:
-        users_df = pd.DataFrame(columns=['id','name'])
     auth_conn.close()
 
     # Merge dataframes
     df = crm_df.merge(meta_df, on='CustomerID', how='left')
 
-    # Map assigned_to -> assigned_name
+    # Map AccountManager to user names from CRM_Users
     if not users_df.empty:
-        users_df = users_df.rename(columns={'id': 'assigned_to', 'name': 'assigned_name'})
-        df = df.merge(users_df, on='assigned_to', how='left')
+        # Create mapping from AccountManager to Name
+        account_manager_map = dict(zip(users_df['UserID'], users_df['Name']))
+        df['assigned_name'] = df['AccountManager'].map(account_manager_map)
     else:
         df['assigned_name'] = None
 
@@ -307,43 +309,14 @@ def get_customers_enhanced(user_id=None, user_role=None):
 
     return df_filtered.reset_index(drop=True)
 
-def generate_customer_id(country, category):
-    crm_conn = get_connection()
-    crm_cursor = crm_conn.cursor()
-    
-    prefix_map = {
-        'Vietnam': 'VND',
-        'United States': 'USD', 
-        'Singapore': 'SGD',
-        'Hong Kong': 'HKD',
-        'Japan': 'JPY'
-    }
-    
-    prefix = prefix_map.get(country, 'XXX') + category
-    
-    # FIXED: Using correct table name CRM_Customers
-    crm_cursor.execute('''
-        SELECT MAX(CAST(SUBSTRING(CustomerID, 5, 6) AS INT)) 
-        FROM CRM_Customers 
-        WHERE SUBSTRING(CustomerID, 1, 4) = ?
-    ''', (prefix,))
-    
-    result = crm_cursor.fetchone()[0]
-    max_id = result if result else 0
-    
-    new_id = f"{prefix}{str(max_id + 1).zfill(6)}"
-    crm_conn.close()
-    
-    return new_id
-
-# ---------- Pending customers (not approved) ----------
 def get_pending_customers():
-    # Fetch all customers then filter using auth.customer_meta.approved = 0
-    crm_conn = get_crm_connection()
+    crm_conn = get_connection()  # Use get_connection() not get_crm_connection()
     try:
         crm_df = pd.read_sql_query('SELECT * FROM CRM_Customers', crm_conn)
+        users_df = pd.read_sql_query('SELECT UserID, Name FROM CRM_Users', crm_conn)
     except Exception:
         crm_df = pd.DataFrame()
+        users_df = pd.DataFrame(columns=['UserID','Name'])
     crm_conn.close()
 
     auth_conn = get_auth_connection()
@@ -351,21 +324,20 @@ def get_pending_customers():
         meta_df = pd.read_sql_query('SELECT CustomerID, assigned_to, status, approved FROM customer_meta', auth_conn)
     except Exception:
         meta_df = pd.DataFrame(columns=['CustomerID','assigned_to','status','approved'])
-    try:
-        users_df = pd.read_sql_query('SELECT id, name FROM users', auth_conn)
-    except Exception:
-        users_df = pd.DataFrame(columns=['id','name'])
     auth_conn.close()
 
     if crm_df.empty:
         return crm_df
 
     df = crm_df.merge(meta_df, on='CustomerID', how='left')
+    
+    # Map AccountManager to user names
     if not users_df.empty:
-        users_df = users_df.rename(columns={'id': 'assigned_to', 'name': 'assigned_name'})
-        df = df.merge(users_df, on='assigned_to', how='left')
+        account_manager_map = dict(zip(users_df['UserID'], users_df['Name']))
+        df['assigned_name'] = df['AccountManager'].map(account_manager_map)
     else:
         df['assigned_name'] = None
+        
     df['approved'] = df['approved'].fillna(0).astype(int)
     pending = df[df['approved'] == 0].reset_index(drop=True)
     return pending
@@ -896,16 +868,18 @@ def show_customers():
                 industry = st.text_input("Industry")
                 source = st.selectbox("Source", ['Facebook', 'Website', 'Giới thiệu', 'Google Ads', 'Email Marketing', 'Other'])
                 
-                # Assign to employee (from auth.db)
-                users_df = get_all_users()
-                employee_users = users_df[users_df['role'] == 'employee']
-                if len(employee_users) > 0:
-                    assigned_to = st.selectbox("Assign to Employee", 
-                                             options=employee_users['id'].tolist(),
-                                             format_func=lambda x: employee_users[employee_users['id']==x]['name'].iloc[0])
+                # Assign to employee (from CRM_Users table)
+                conn = get_connection()
+                account_managers_df = pd.read_sql_query('SELECT DISTINCT AccountManager FROM CRM_Customers WHERE AccountManager IS NOT NULL ORDER BY AccountManager', conn)
+                conn.close()
+
+                if len(account_managers_df) > 0:
+                    assigned_to = st.selectbox("Account Manager", 
+                             options=[''] + account_managers_df['AccountManager'].tolist(),
+                             format_func=lambda x: x if x else "Select Account Manager")
                 else:
-                    st.warning("No employees available")
-                    assigned_to = None
+                    st.warning("No account managers found in existing customers")
+                    assigned_to = st.text_input("Account Manager")
             
             submit_customer = st.form_submit_button("Add Customer")
         
@@ -978,7 +952,7 @@ def show_customers():
                         st.write(f"**Secondary Contact:** {customer.get('ContactPerson2')}")
                         st.write(f"**Secondary Email:** {customer.get('ContactEmail2') or 'N/A'}")
                         st.write(f"**Secondary Phone:** {customer.get('ContactPhone2') or 'N/A'}")
-                    st.write(f"**Assigned to:** {customer.get('assigned_name')}")
+                    st.write(f"**Assigned to:** {customer.get('AccountManager') or 'N/A'}")
                     st.write(f"**Group:** {customer.get('Group') or 'N/A'}")
                 
                 # Action buttons
@@ -1115,7 +1089,7 @@ def show_customers():
 
 
 # Fixed add_customer_enhanced function
-def add_customer_enhanced(company_name, tax_code, group_id, address, country, customer_category, 
+def add_customer_enhanced(company_name, tax_code, group_name, address, country, customer_category, 
                          company_type, contact_person1, contact_email1, contact_phone1,
                          contact_person2, contact_email2, contact_phone2, industry, source,
                          assigned_to, created_by, auto_approve=False):
@@ -1136,15 +1110,17 @@ def add_customer_enhanced(company_name, tax_code, group_id, address, country, cu
         # FIXED: Using actual CRM_Customers columns
         crm_cursor.execute('''
             INSERT INTO CRM_Customers (
-                CustomerID, CompanyName, TaxCode, Group, Address, Country, CustomerCategory,
+                CustomerID, CompanyName, TaxCode, [Group], Address, Country, CustomerCategory,
                 CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
-                ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, CreatedDate
+                ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, 
+                CreatedDate, AccountManager, AnnualRevenueSize
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             customer_id, company_name, tax_code, group_name, address, country, customer_category,
             company_type, contact_person1, contact_email1, contact_phone1,
-            contact_person2, contact_email2, contact_phone2, industry, source, created_date
-        ))
+            contact_person2, contact_email2, contact_phone2, industry, source, 
+            created_date, assigned_to, None
+    ))
         crm_conn.commit()
         crm_conn.close()
         print("DEBUG: Successfully inserted into CRM_Customers")
@@ -1437,6 +1413,16 @@ def show_payments():
                     type_of_payment = st.text_input("Type of Payment")
                     currency = st.selectbox("Currency", ['VND', 'USD', 'EUR', 'SGD', 'HKD', 'JPY'])
                     paid_amount = st.number_input("Paid Amount", min_value=0.0, format="%.2f")
+                    conn = get_connection()
+                    payment_types_df = pd.read_sql_query('SELECT DISTINCT PaymentType FROM CRM_Services WHERE PaymentType IS NOT NULL ORDER BY PaymentType', conn)
+                    conn.close()
+                    if len(payment_types_df) > 0:
+                        payment_type = st.selectbox("Payment Type",
+                                                options=[''] + payment_types_df['PaymentType'].tolist(),
+                                                format_func=lambda x: x if x else "Select Payment Type")
+                    else:
+                        st.warning("No payment types found")
+                        payment_type = st.text_input("Payment Type")
                 
                 with col2:
                     exrate = st.number_input("Exchange Rate", min_value=0.0, value=1.0, format="%.4f")
@@ -1469,8 +1455,8 @@ def show_payments():
                             insert_query = """
                             INSERT INTO CRM_Payments
                             (PaymentDate, TypeOfPayment, PaidAmount, Currency, Exrate, PayerName,
-                            ReceivedAccount, Notes, InvoiceID, PaidAmountUSD)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ReceivedAccount, Notes, InvoiceID, PaidAmountUSD, PaymentType)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """
                             paid_amount_usd = paid_amount / exrate if currency != 'USD' else paid_amount
                             cursor.execute(insert_query, (payment_date,
@@ -1482,7 +1468,8 @@ def show_payments():
                                                           received_account,
                                                           notes,
                                                           invoice_id,
-                                                          paid_amount_usd
+                                                          paid_amount_usd,
+                                                          payment_type                          
                             ))
 
                             conn.commit()
@@ -1501,15 +1488,24 @@ def show_payments():
         conn = get_connection()
         payments_df = pd.read_sql_query("""
             SELECT PaymentID, PaymentDate, TypeOfPayment, PaidAmount, Currency, 
-                   Exrate, PayerName, ReceivedAccount, Notes, InvoiceID, PaidAmountUSD
-            FROM CRM_Payments 
+                   Exrate, PayerName, ReceivedAccount, Notes, InvoiceID, PaidAmountUSD, PaymentType
+            FROM CRM_Payments, CRM_Services
             ORDER BY PaymentDate DESC, PaymentID DESC
         """, conn)
         conn.close()
         
         if len(payments_df) > 0:
-            for _, payment in payments_df.iterrows():
-                with st.expander(f"{payment['Currency']} ({payment['PaymentDate']})"):
+
+            payer_options = ['All Payers'] + sorted(payments_df['PayerName'].unique().tolist())
+            selected_payer = st.selectbox("Filter by Payer", options=payer_options)
+
+            if selected_payer != 'All Payers':
+                filtered_payments = payments_df[payments_df['PayerName'] == selected_payer]
+            else:
+                filtered_payments = payments_df
+
+            for _, payment in filtered_payments.iterrows():
+                with st.expander(f"{payment['PaymentID']} ({payment['PaymentDate']})"):
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -1523,14 +1519,17 @@ def show_payments():
                         st.write(f"**Payer Name:** {payment['PayerName']}")
                         st.write(f"**Received Account:** {payment['ReceivedAccount']}")
                         st.write(f"**Invoice ID:** {payment['InvoiceID']}")
+                        st.write(f"**Payment Type:** {payment.get('PaymentType') or 'N/A'}")
                     
                     if payment['Notes']:
                         st.write(f"**Notes:** {payment['Notes']}")
+            st.write(f"Showing {len(filtered_payments)} of {len(payments_df)} payments")
         else:
             st.info("No payments found.")
             
     except Exception as e:
         st.error(f"Error loading payments: {e}")
+
 def show_documents():
     st.header("Document Management")
     
@@ -1684,7 +1683,8 @@ def show_approvals():
                     st.write(f"**Primary Phone:** {customer['ContactPhone1'] or 'N/A'}")
                     st.write(f"**Industry:** {customer['Industry'] or 'N/A'}")
                     st.write(f"**Source:** {customer['Source'] or 'N/A'}")
-                    st.write(f"**Assigned to:** {customer['assigned_name']}")
+                    st.write(f"**Assigned to:** {customer.get('AccountManager') or 'N/A'}")
+                    st.write(f"**DEBUG - AccountManager value:** '{customer.get('AccountManager')}'")  # Remove this after testing
                 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1942,7 +1942,7 @@ def show_services():
                 st.warning("No customers available. Add customers first.")
     
     # Display services
-    st.subheader("Service List")
+    st.subheader("Previous Service")
     services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
     
     if len(services_df) > 0:
