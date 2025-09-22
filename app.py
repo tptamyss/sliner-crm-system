@@ -1943,41 +1943,60 @@ def show_services():
     
     # Display services
     st.subheader("Previous Service")
-    services_df = get_all_services(st.session_state.user['id'], st.session_state.user['role'])
-    
-    if len(services_df) > 0:
-        for idx, service in services_df.iterrows():
-            with st.expander(f"{service['ServiceType']} ({service['CompanyName']})"):
-                col1, col2 = st.columns(2)
+    try:
+        conn = get_connection()
+        services_df = pd.read_sql_query("""
+           SELECT s.*, c.[Group] as CustomerGroup, c.CompanyName
+           FROM CRM_Services s
+           JOIN CRM_Customers c ON s.CustomerID = c.CustomerID
+           ORDER BY c.[Group], s.ServiceID DESC
+        """, conn)
+        conn.close()
+        if len(services_df) > 0:
+            # Group filter toggle
+            group_options = ['All Groups'] + sorted(services_df['CustomerGroup'].dropna().unique().tolist())
+            selected_group = st.selectbox("Filter by Customer Group", options=group_options)
+        
+            # Filter services based on selected group
+            if selected_group != 'All Groups':
+                filtered_services = services_df[services_df['CustomerGroup'] == selected_group]
+            else:
+                filtered_services = services_df
+        
+            for idx, service in filtered_services.iterrows():
+                with st.expander(f"{service['ServiceType']}"):
+                    col1, col2 = st.columns(2)
                 
-                with col1:
-                    st.write(f"**Customer:** {service['CompanyName']}")
-                    st.write(f"**Service Type:** {service['ServiceType']}")
-                    st.write(f"**Start Date:** {service['StartDate']}")
-                    st.write(f"**Expected End Date:** {service['ExpectedEndDate']}")
+                    with col1:
+                        st.write(f"**Customer:** {service['CompanyName']}")
+                        st.write(f"**Service Type:** {service['ServiceType']}")
+                        st.write(f"**Start Date:** {service['StartDate']}")
+                        st.write(f"**Expected End Date:** {service['ExpectedEndDate']}")
                 
-                with col2:
-                    st.write(f"**Package Code:** {service.get('PackageCode', 'N/A')}")
-                    st.write(f"**Partner:** {service.get('Partner', 'N/A')}")
+                    with col2:
+                        st.write(f"**Package Code:** {service.get('PackageCode', 'N/A')}")
+                        st.write(f"**Partner:** {service.get('Partner', 'N/A')}")
                 
-                if service.get('Description'):
-                    st.write(f"**Description:** {service['Description']}")
+                    if service.get('Description'):
+                        st.write(f"**Description:** {service['Description']}")
                 
-                # Quick action buttons
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("Add Task", key=f"task_{service['ServiceID']}"):
-                        st.session_state.selected_service_for_task = service['ServiceID']
-                        st.session_state.current_page = "Work Progress"
-                        st.rerun()
+                    # Quick action buttons
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("Add Task", key=f"task_{service['ServiceID']}"):
+                            st.session_state.selected_service_for_task = service['ServiceID']
+                            st.session_state.current_page = "Work Progress"
+                            st.rerun()
                 
-                with col2:
-                    if st.button("Add Payment", key=f"payment_{service['ServiceID']}"):
-                        st.session_state.selected_service_for_payment = service['ServiceID']
-                        st.session_state.current_page = "Payment Management"
-                        st.rerun()
-    else:
-        st.info("No services found. Add your first service above!")
+                    with col2:
+                        if st.button("Add Payment", key=f"payment_{service['ServiceID']}"):
+                            st.session_state.selected_service_for_payment = service['ServiceID']
+                            st.session_state.current_page = "Payment Management"
+                            st.rerun()
+        else:
+            st.info("No services found. Add your first service above!")
+    except:
+        st.error(f"Error loading services: {e}")
 
 # Add missing utility functions
 def delete_customer(customer_id):
