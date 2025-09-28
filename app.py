@@ -161,8 +161,7 @@ def init_database():
                 return False
     
     return False
-    
-    return False
+
 
 def hash_password(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -183,34 +182,6 @@ def authenticate_user(email, password):
     if user and verify_password(password, user[1]):
         return {'id': user[0], 'email': email, 'role': user[2], 'name': user[3]}
     return None
-
-def generate_customer_id(country, category):
-    conn = get_connection()  # Your SQL Server connection
-    cursor = conn.cursor()
-    
-    prefix_map = {
-        'Vietnam': 'VND',
-        'United States': 'USD', 
-        'Singapore': 'SGD',
-        'Hong Kong': 'HKD',
-        'Japan': 'JPY'
-    }
-    
-    prefix = prefix_map.get(country, 'XXX') + category
-    
-    cursor.execute('''
-        SELECT MAX(CAST(SUBSTRING(CustomerID, 5, 6) AS INT)) 
-        FROM CRM_Customers 
-        WHERE SUBSTRING(CustomerID, 1, 4) = ?
-    ''', (prefix,))
-    
-    result = cursor.fetchone()[0]
-    max_id = result if result else 0
-    
-    new_id = f"{prefix}{str(max_id + 1).zfill(6)}"
-    conn.close()
-    
-    return new_id
 
 # ---------- Users (SQLite auth.db) ----------
 def get_all_users():
@@ -472,7 +443,7 @@ def get_all_services(user_id=None, user_role=None):
 
     return df_filtered.reset_index(drop=True)
 
-# ---------- Work Progress (SQL Server) ----------
+# ---------- Payment Progress (SQL Server) ----------
 def add_work_task(service_id, task_name, task_description, start_date, expected_end_date, updated_by):
     crm_conn = get_crm_connection()
     crm_cursor = crm_conn.cursor()
@@ -795,7 +766,34 @@ def get_dashboard_stats():
             'customer_progress': [],
             'overdue_tasks': []
         }
+def debug_database_tables():
+    """Debug function to check what tables exist in the database"""
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Get list of all tables in the database
+        cursor.execute("""
+            SELECT TABLE_NAME 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_NAME
+        """)
+        
+        tables = cursor.fetchall()
+        print("Available tables in database:")
+        for table in tables:
+            print(f"  - {table[0]}")
+        
+        conn.close()
+        return tables
+        
+    except Exception as e:
+        print(f"Error checking database tables: {e}")
+        return []
 
+# Add this to your main() function or call it when the error occurs
+# debug_database_tables()
 def login_page():
     st.title("CRM System - Login")
     
@@ -831,14 +829,23 @@ def show_customers():
             
             with col1:
                 company_name = st.text_input("Company Name*")
+                customer_id = st.text_input("Customer ID")
                 tax_code = st.text_input("Tax Code")
                 
                 # Get customer groups (from SQL Server CRM_Customers table)
                 groups_df = get_customer_groups()
                 if len(groups_df) > 0:
-                    group_name = st.selectbox("Customer Group", 
-                        options=[''] + groups_df['Group'].tolist(),
+                    group_options = [''] + groups_df['Group'].tolist() + ['Other (Custom)']
+                    group_selection = st.selectbox("Customer Group", 
+                        options = group_options,
                         format_func=lambda x: x if x else "Select Group")
+                    
+                    custom_group = st.text_input("Custom Group Name (only used if 'Other' selected above)")
+
+                    if group_selection == 'Other (Custom)':
+                        group_name = custom_group
+                    else:
+                        group_name = group_selection
                 else:
                     group_name = st.text_input("Group Name")
                 
@@ -856,6 +863,8 @@ def show_customers():
                 company_type = st.text_input("Company Type", 
                                             value=dict([('I', 'Cá nhân'), ('H', 'Hộ kinh doanh'), ('C', 'Doanh nghiệp')])[customer_category[0]])
             
+                created_date = st.date_input("Created Date")
+            
             with col2:
                 contact_person1 = st.text_input("Primary Contact Person*")
                 contact_email1 = st.text_input("Primary Email")
@@ -866,7 +875,25 @@ def show_customers():
                 contact_phone2 = st.text_input("Secondary Phone")
                 
                 industry = st.text_input("Industry")
-                source = st.selectbox("Source", ['Facebook', 'Website', 'Giới thiệu', 'Google Ads', 'Email Marketing', 'Other'])
+                
+                # Source
+                conn = get_connection()
+                sources_df = pd.read_sql_query('SELECT DISTINCT Source FROM CRM_Customers WHERE Source IS NOT NULL ORDER BY Source', conn)
+                conn.close()
+                if len(sources_df) > 0:
+                    source_options = [''] + sources_df['Source'].tolist() + ['Other']
+                    source_selection = st.selectbox("Source",
+                                                    options = source_options,
+                                                    format_func = lambda x : x if x else "Select Source")
+
+                    custom_source = st.text_input("Custom Source (only used if 'Other' selected above)")
+                    
+                    if source_selection == 'Other':
+                        source = custom_source
+                    else:
+                        source = source_selection
+                else:
+                    source = st.text_input("Source")
                 
                 # Assign to employee (from CRM_Users table)
                 conn = get_connection()
@@ -874,17 +901,34 @@ def show_customers():
                 conn.close()
 
                 if len(account_managers_df) > 0:
-                    assigned_to = st.selectbox("Account Manager", 
-                             options=[''] + account_managers_df['AccountManager'].tolist(),
-                             format_func=lambda x: x if x else "Select Account Manager")
+                    manager_options = [''] + account_managers_df['AccountManager'].tolist() + ['Other (Custom)']
+                    manager_selection = st.selectbox("Account Manager", 
+                                     options=manager_options,
+                                     format_func=lambda x: x if x else "Select Account Manager")
+    
+                    custom_manager = st.text_input("Custom Account Manager (only used if 'Other' selected above)")
+    
+                    if manager_selection == 'Other (Custom)':
+                        assigned_to = custom_manager
+                    else:
+                        assigned_to = manager_selection
                 else:
-                    st.warning("No account managers found in existing customers")
                     assigned_to = st.text_input("Account Manager")
             
             submit_customer = st.form_submit_button("Add Customer")
         
         # Handle form submission OUTSIDE the form
         if submit_customer:
+            st.write("DEBUG: Values received:")
+            st.write(f"- company_name: '{company_name}'")
+            st.write(f"- contact_person1: '{contact_person1}'")
+            st.write(f"- group_selection: '{group_selection}'")
+            st.write(f"- group_name: '{group_name}'")
+            st.write(f"- source_selection: '{source_selection}'")
+            st.write(f"- source: '{source}'")
+            st.write(f"- manager_selection: '{manager_selection}'")
+            st.write(f"- assigned_to: '{assigned_to}'")
+            st.write("---")
             if not company_name or not contact_person1:
                 st.error("Company Name and Primary Contact Person are required!")
             elif not assigned_to:
@@ -892,10 +936,10 @@ def show_customers():
             else:
                 auto_approve = st.session_state.user['role'] == 'admin'
                 customer_id = add_customer_enhanced(
-                    company_name, tax_code, group_name, address, country, customer_category[0],
-                    company_type, contact_person1, contact_email1, contact_phone1,
-                    contact_person2, contact_email2, contact_phone2, industry, source,
-                    assigned_to, st.session_state.user['id'], auto_approve
+                    customer_id, company_name, tax_code, group_name, address, country, customer_category,
+    company_type, contact_person1, contact_email1, contact_phone1,
+    contact_person2, contact_email2, contact_phone2, industry, source, 
+    created_date, assigned_to, st.session_state.user['id'], auto_approve
                 )
                 
                 if customer_id:
@@ -916,7 +960,7 @@ def show_customers():
         # Filter options
         col1, col2, col3 = st.columns(3)
         with col1:
-            category_filter = st.selectbox("Filter by Category", ['All', 'I', 'H', 'C'])
+            group_filter = st.selectbox("Filter by Group", ['All'] + list(customers_df['Group'].unique()))
         with col2:
             country_filter = st.selectbox("Filter by Country", ['All'] + list(customers_df['Country'].unique()))
         with col3:
@@ -924,8 +968,8 @@ def show_customers():
         
         # Apply filters
         filtered_df = customers_df.copy()
-        if category_filter != 'All':
-            filtered_df = filtered_df[filtered_df['CustomerCategory'] == category_filter]
+        if group_filter != 'All':
+            filtered_df = filtered_df[filtered_df['Group'] == group_filter]
         if country_filter != 'All':
             filtered_df = filtered_df[filtered_df['Country'] == country_filter]
         if status_filter != 'All':
@@ -943,6 +987,7 @@ def show_customers():
                     st.write(f"**Category:** {customer.get('CustomerCategory')} - {customer.get('CompanyType')}")
                     st.write(f"**Industry:** {customer.get('Industry') or 'N/A'}")
                     st.write(f"**Source:** {customer.get('Source') or 'N/A'}")
+                    st.write(f"**Created Date:** {customer.get('CreatedDate') or 'N/A'}")
                 
                 with col2:
                     st.write(f"**Primary Contact:** {customer.get('ContactPerson1')}")
@@ -965,20 +1010,53 @@ def show_customers():
                 
                 with col1:
                     if can_edit:
-                        status_options = ['Chưa bắt đầu', 'Đang triển khai', 'Hoàn thành', 'Hủy bỏ']
-                        new_status = st.selectbox(
-                            "Status",
-                            status_options,
-                            index=status_options.index(current_status) if current_status in status_options else 0,
-                            key=f"status_{customer['CustomerID']}"
-                        )
-                        
-                        if new_status != current_status:
-                            update_customer_status(customer['CustomerID'], new_status)
-                            st.success(f"Status updated to {new_status}")
-                            st.rerun()
+                        conn = get_connection()
+                        status_df = pd.read_sql_query("""
+
+                                                      SELECT DISTINCT Status 
+                                                      FROM CRM_Services 
+                                                    WHERE CustomerID = ? AND Status IS NOT NULL
+                                                      """, conn, params=[customer['CustomerID']])
+                        conn.close()
+
+                        if not status_df.empty:
+                            status_options = status_df["Status"].tolist()
+                            current_service_status = status_options[0] if status_options else None
+                            new_status = st.selectbox(
+                                "Status",
+                                status_options,
+                                index=status_options.index(current_service_status) if current_service_status in status_options else 0,
+                                key=f"status_{customer['CustomerID']}"
+                            )
+            
+                            # Handle status change (inside the if block where variables are defined)
+                            if new_status != current_service_status:
+                                conn = get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    UPDATE CRM_Services 
+                                    SET Status = ? 
+                                    WHERE CustomerID = ?
+                                """, (new_status, customer['CustomerID']))
+                                conn.commit()
+                                conn.close()
+                                st.success(f"Service status updated to {new_status}")
+                                st.rerun()
+                        else:
+                            st.write("**Service Status:** No services found")
                     else:
-                        st.write(f"**Status:** {current_status}")
+                        conn = get_connection()
+                        status_df = pd.read_sql_query("""
+                            SELECT DISTINCT Status FROM CRM_Services 
+                            WHERE CustomerID = ?
+                        """, conn, params=[customer['CustomerID']])
+                        conn.close()
+                
+                        if not status_df.empty:
+                            statuses = status_df['Status'].dropna().tolist()
+                            st.write(f"**Service Status:** {', '.join(statuses) if statuses else 'N/A'}")
+                        else:
+                            st.write("**Service Status:** No services")
                 
                 with col2:
                     if can_edit:
@@ -1088,48 +1166,59 @@ def show_customers():
         st.info("No customers found. Add your first customer above!")
 
 
-# Fixed add_customer_enhanced function
-def add_customer_enhanced(company_name, tax_code, group_name, address, country, customer_category, 
-                         company_type, contact_person1, contact_email1, contact_phone1,
-                         contact_person2, contact_email2, contact_phone2, industry, source,
-                         assigned_to, created_by, auto_approve=False):
+def add_customer_enhanced(customer_id, company_name, tax_code, group_name, address, country, customer_category,
+    company_type, contact_person1, contact_email1, contact_phone1,
+    contact_person2, contact_email2, contact_phone2, industry, source, 
+    created_date, assigned_to, created_by_user_id, auto_approve=False):
     """
     Insert customer into SQL Server CRM_Customers table and metadata into SQLite auth.db
     """
     print(f"DEBUG: Starting add_customer_enhanced for {company_name}")
+    print(f"DEBUG: Using customer_id: {customer_id}")
     
-    # 1) Insert into SQL Server CRM_Customers (using correct columns)
+    # Just use the customer_id as provided (no generation)
+    if not customer_id or customer_id.strip() == "":
+        st.error("Customer ID is required!")
+        return None
+    
+    customer_id = customer_id.strip()
+    
+    # 1) Insert into SQL Server CRM_Customers
     try:
-        crm_conn = get_connection()  # Use consistent connection function
+        crm_conn = get_connection()
         crm_cursor = crm_conn.cursor()
         
-        customer_id = generate_customer_id(country, customer_category)
-        created_date = datetime.now().date()
-        print(f"DEBUG: Generated customer_id: {customer_id}")
-
-        # FIXED: Using actual CRM_Customers columns
+        print(f"DEBUG: About to insert into CRM_Customers")
+        
+        # Extract just the code from customer_category tuple if it's a tuple
+        if isinstance(customer_category, tuple):
+            category_code = customer_category[0]
+        else:
+            category_code = customer_category
+        
         crm_cursor.execute('''
             INSERT INTO CRM_Customers (
                 CustomerID, CompanyName, TaxCode, [Group], Address, Country, CustomerCategory,
                 CompanyType, ContactPerson1, ContactEmail1, ContactPhone1,
                 ContactPerson2, ContactEmail2, ContactPhone2, Industry, Source, 
                 CreatedDate, AccountManager, AnnualRevenueSize
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            customer_id, company_name, tax_code, group_name, address, country, customer_category,
+            customer_id, company_name, tax_code, group_name, address, country, category_code,
             company_type, contact_person1, contact_email1, contact_phone1,
             contact_person2, contact_email2, contact_phone2, industry, source, 
             created_date, assigned_to, None
-    ))
+        ))
         crm_conn.commit()
         crm_conn.close()
         print("DEBUG: Successfully inserted into CRM_Customers")
         
     except Exception as e:
         print(f"ERROR: Failed to insert into CRM_Customers: {e}")
+        st.error(f"Database error (SQL Server): {e}")
         return None
 
-    # 2) Insert metadata into SQLite auth.db (this part stays the same)
+    # 2) Insert metadata into SQLite auth.db
     try:
         auth_conn = get_auth_connection()
         auth_cursor = auth_conn.cursor()
@@ -1140,7 +1229,7 @@ def add_customer_enhanced(company_name, tax_code, group_name, address, country, 
         auth_cursor.execute('''
             INSERT OR REPLACE INTO customer_meta (CustomerID, assigned_to, status, approved, created_by, created_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ''', (customer_id, assigned_to, 'Chưa bắt đầu', approved_flag, created_by))
+        ''', (customer_id, assigned_to, 'Chưa bắt đầu', approved_flag, created_by_user_id))
         
         if not auto_approve:
             notification_id = str(uuid.uuid4())
@@ -1157,7 +1246,10 @@ def add_customer_enhanced(company_name, tax_code, group_name, address, country, 
         
     except Exception as e:
         print(f"ERROR: Failed to insert into auth.db: {e}")
+        st.error(f"Database error (SQLite): {e}")
         return None
+    
+
 # --------------------------
 # Modified show_user_management function
 # --------------------------
@@ -1330,68 +1422,6 @@ def show_work_progress():
     
     # Display tasks
     st.subheader("Task List")
-    
-    work_df = get_work_progress(st.session_state.user['id'], st.session_state.user['role'])
-    
-    if len(work_df) > 0:
-        # Filter by status
-        status_filter = st.selectbox("Filter by Status", ['All', 'Chưa bắt đầu', 'Đang thực hiện', 'Chờ duyệt', 'Hoàn thành'])
-        
-        if status_filter != 'All':
-            filtered_df = work_df[work_df['Status'] == status_filter]
-        else:
-            filtered_df = work_df
-        
-        for idx, task in filtered_df.iterrows():
-            with st.expander(f"{task['TaskName']} ({task['CompanyName']})"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**Service:** {task['ServiceType']}")
-                    st.write(f"**Customer:** {task['CompanyName']}")
-                    st.write(f"**Start Date:** {task['StartDate']}")
-                    st.write(f"**Expected End Date:** {task['ExpectedEndDate']}")
-                
-                with col2:
-                    st.write(f"**Status:** {task['Status']}")
-                    st.write(f"**Progress:** {task['Progress']}%")
-                    st.write(f"**Last Updated:** {task['LastUpdated']}")
-                    st.write(f"**Updated By:** {task['updated_by_name']}")
-                
-                if task['TaskDescription']:
-                    st.write(f"**Description:** {task['TaskDescription']}")
-                
-                if task['Notes']:
-                    st.write(f"**Notes:** {task['Notes']}")
-                
-                # Task update form
-                can_edit = (st.session_state.user['role'] == 'admin' or 
-                          task['updated_by_name'] == st.session_state.user['name'])
-                
-                if can_edit:
-                    with st.form(f"update_task_{task['TaskID']}"):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            new_status = st.selectbox("Update Status", 
-                                                    ['Chưa bắt đầu', 'Đang thực hiện', 'Chờ duyệt', 'Hoàn thành'],
-                                                    index=['Chưa bắt đầu', 'Đang thực hiện', 'Chờ duyệt', 'Hoàn thành'].index(task['Status']))
-                        
-                        with col2:
-                            new_progress = st.number_input("Progress %", min_value=0, max_value=100, value=task['Progress'])
-                        
-                        with col3:
-                            st.write(" ")  # Spacing
-                        
-                        update_notes = st.text_area("Update Notes", key=f"notes_{task['TaskID']}")
-                        
-                        if st.form_submit_button("Update Task"):
-                            update_task_status(task['TaskID'], new_status, new_progress, 
-                                             st.session_state.user['id'], update_notes)
-                            st.success("Task updated successfully!")
-                            st.rerun()
-    else:
-        st.info("No tasks found. Add your first task above!")
 
 def show_payments():
     st.header("Payment Management")
@@ -1487,11 +1517,14 @@ def show_payments():
     try:
         conn = get_connection()
         payments_df = pd.read_sql_query("""
-            SELECT PaymentID, PaymentDate, TypeOfPayment, PaidAmount, Currency, 
-                   Exrate, PayerName, ReceivedAccount, Notes, InvoiceID, PaidAmountUSD, PaymentType
-            FROM CRM_Payments, CRM_Services
-            ORDER BY PaymentDate DESC, PaymentID DESC
-        """, conn)
+    SELECT p.PaymentID, p.PaymentDate, p.TypeOfPayment, p.PaidAmount, p.Currency, 
+           p.Exrate, p.PayerName, p.ReceivedAccount, p.Notes, p.InvoiceID, p.PaidAmountUSD, 
+           s.PaymentType
+    FROM CRM_Payments p
+    LEFT JOIN CRM_Invoice i ON p.InvoiceID = i.InvoiceCode
+    LEFT JOIN CRM_Services s ON i.ServiceID = s.ServiceID
+    ORDER BY p.PaymentID DESC
+""", conn)
         conn.close()
         
         if len(payments_df) > 0:
@@ -1529,6 +1562,111 @@ def show_payments():
             
     except Exception as e:
         st.error(f"Error loading payments: {e}")
+
+def show_payment_progress():
+    st.header("Payment Progress")
+    
+    try:
+        conn = get_connection()
+        # Get the billing data with minimum outstanding amount per invoice code
+        billing_df = pd.read_sql_query("""
+            SELECT Date, InvoiceID, InvoiceCode, PaymentID, 
+                                       FullAmount, PaymentAmount, OutstandingAmount
+            FROM CRM_Billing 
+            WHERE InvoiceCode IS NOT NULL
+            ORDER BY InvoiceCode
+        """, conn)
+        conn.close()
+        
+        if len(billing_df) > 0:
+
+            status_options = ['All', 'Fully Paid', 'Partially Paid', 'Unpaid']
+            selected_status = st.selectbox("Payment Status", status_options)
+            
+            
+            # Apply filters
+            filtered_df = billing_df.copy()
+            
+            if selected_status == 'Fully Paid':
+                filtered_df = filtered_df[filtered_df['OutstandingAmount'] == 0]
+            elif selected_status == 'Partially Paid':
+                filtered_df = filtered_df[(filtered_df['OutstandingAmount'] > 0) & 
+                                        (filtered_df['PaymentAmount'].notna()) & 
+                                        (filtered_df['PaymentAmount'] > 0)]
+            elif selected_status == 'Unpaid':
+                filtered_df = filtered_df[filtered_df['PaymentAmount'].isna() | (filtered_df['PaymentAmount'] == 0)]
+            
+
+            # Display billing records
+            st.subheader(f"Payment Progress Details ({len(filtered_df)} records)")
+            
+            for idx, record in filtered_df.iterrows():
+                # Calculate progress percentage
+                if record['FullAmount'] > 0:
+                    progress_pct = ((record['FullAmount'] - record['OutstandingAmount']) / record['FullAmount']) * 100
+                else:
+                    progress_pct = 0
+                
+                # Determine status color
+                if record['OutstandingAmount'] == 0:
+                    status_color = "🟢"  # Fully paid
+                    status_text = "Fully Paid"
+                elif record['PaymentAmount'] > 0 and record['OutstandingAmount'] > 0:
+                    status_color = "🟡"
+                    status_text = "Partially Paid"
+                else:
+                    status_color = "🔴"  # Unpaid
+                    status_text = "Unpaid"
+                
+                with st.expander(f"{status_color} {record['InvoiceCode']} - {status_text} ({progress_pct:.1f}%)"):
+                    # Progress bar
+                    st.progress(progress_pct / 100, text=f"Payment Progress: {progress_pct:.1f}%")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Invoice Code:** {record['InvoiceCode']}")
+                        st.write(f"**Invoice ID:** {record['InvoiceID']}")
+                        st.write(f"**Payment ID:** {record['PaymentID']}")
+                        st.write(f"**Date:** {record['Date']}")
+                    
+                    with col2:
+                        st.write(f"**Full Amount:** ${record['FullAmount']:,.2f}")
+                        st.write(f"**Payment Amount:** ${record['PaymentAmount']:,.2f}")
+                        st.write(f"**Outstanding Amount:** ${record['OutstandingAmount']:,.2f}")
+                        
+                        # Payment ratio
+                        if record['FullAmount'] > 0:
+                            payment_ratio = record['PaymentAmount'] / record['FullAmount']
+                            st.write(f"**Payment Ratio:** {payment_ratio:.1%}")
+                    
+                    # Additional actions could go here
+                    if record['OutstandingAmount'] > 0:
+                        st.warning(f"Outstanding balance: ${record['OutstandingAmount']:,.2f}")
+            
+            # Summary chart
+            if len(filtered_df) > 0:
+                st.subheader("Payment Status Distribution")
+                
+                # Create status distribution
+                status_counts = []
+                for _, record in filtered_df.iterrows():
+                    if record['OutstandingAmount'] == 0:
+                        status_counts.append('Fully Paid')
+                    elif record['PaymentAmount'] > 0:
+                        status_counts.append('Partially Paid')
+                    else:
+                        status_counts.append('Unpaid')
+                
+                status_df = pd.Series(status_counts).value_counts()
+                st.bar_chart(status_df)
+        
+        else:
+            st.info("No billing records found.")
+            
+    except Exception as e:
+        st.error(f"Error loading payment progress: {e}")
+        st.write("Please check your database connection and table structure.")
 
 def show_documents():
     st.header("Document Management")
@@ -1676,6 +1814,7 @@ def show_approvals():
                     st.write(f"**Address:** {customer['Address'] or 'N/A'}")
                     st.write(f"**Country:** {customer['Country']}")
                     st.write(f"**Category:** {customer['CustomerCategory']} - {customer['CompanyType']}")
+                    st.write(f"**Created Date:** {customer['CreatedDate']}")
                 
                 with col2:
                     st.write(f"**Primary Contact:** {customer['ContactPerson1']}")
@@ -1793,6 +1932,7 @@ def show_dashboard():
             "Work Progress",
             "Document Management",
             "Payment Management",
+            "Payment Progress",
             "User Management",
             "Customer Approvals",
             "Notifications",
@@ -1806,6 +1946,7 @@ def show_dashboard():
             "Work Progress",
             "Document Management",
             "Payment Management",
+            "Payment Progress",
             "Notifications"
         ]
 
@@ -1848,6 +1989,8 @@ def show_dashboard():
         show_documents()
     elif selected_page == "Payment Management":
         show_payments()
+    elif selected_page == "Payment Progress":
+        show_payment_progress()
     elif selected_page == "User Management":
         show_user_management()
     elif selected_page == "Customer Approvals":
@@ -1858,8 +2001,9 @@ def show_dashboard():
         show_reports()
 
 def show_dashboard_home():
-    conn = get_connection()
     st.title("📊 CRM Dashboard")
+
+    conn = get_connection()
     
     # Get dashboard statistics
     stats = get_dashboard_stats()
@@ -1881,12 +2025,19 @@ def show_dashboard_home():
     with col4:
         unread_count = get_unread_count(st.session_state.user['id'], st.session_state.user['role'])
         st.metric("Unread Notifications", unread_count)
-    
-    # Task statistics
-    if stats['task_stats']:
+
+    task_stats_df = pd.read_sql_query("""
+                                      SELECT Status, COUNT(*) as Count
+                                      FROM CRM_Services 
+                                      WHERE Status IS NOT NULL
+                                      GROUP BY Status
+                                      ORDER BY Count DESC
+                                      """, conn)
+    conn.close()
+
+    if len(task_stats_df) > 0:
         st.subheader("📋 Task Overview")
-        task_df = pd.DataFrame(stats['task_stats'], columns=['Status', 'Count'])
-        st.bar_chart(task_df.set_index('Status'))
+        st.bar_chart(task_stats_df.set_index('Status'))
     
     # Recent activity or overdue tasks
     if stats['overdue_tasks']:
